@@ -1,0 +1,4 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #f1f5f4; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+button:hover { opacity: 0.88; }
