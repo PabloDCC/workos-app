@@ -68,6 +68,7 @@ export async function POST(request) {
     const message = changes?.value?.messages?.[0];
     if (!message) return NextResponse.json({ status: 'ok' });
     const from = message.from;
+    console.log('Mensaje recibido de:', from);
     const text = message.type === 'text' ? message.text?.body : null;
     if (!text) {
       await sendMessage(from, 'Por ahora solo proceso mensajes de texto. Proximamente voz y archivos.');
