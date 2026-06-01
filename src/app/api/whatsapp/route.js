@@ -5,7 +5,7 @@ const PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
 
 async function sendMessage(to, text) {
-  await fetch(`https://graph.facebook.com/v19.0/${PHONE_ID}/messages`, {
+  const res = await fetch(`https://graph.facebook.com/v19.0/${PHONE_ID}/messages`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -15,6 +15,9 @@ async function sendMessage(to, text) {
       text: { body: text }
     })
   });
+  const data = await res.json();
+  console.log('WhatsApp API response:', JSON.stringify(data));
+  return data;
 }
 
 function parseCommand(text) {
