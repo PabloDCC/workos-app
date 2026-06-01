@@ -4,7 +4,6 @@ const TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
 
-// ── SEND MESSAGE ──
 async function sendMessage(to, text) {
   await fetch(`https://graph.facebook.com/v19.0/${PHONE_ID}/messages`, {
     method: 'POST',
@@ -18,10 +17,8 @@ async function sendMessage(to, text) {
   });
 }
 
-// ── PARSE COMMAND ──
 function parseCommand(text) {
   const t = text.toLowerCase().trim();
-
   if (t.startsWith('nueva tarea') || t.startsWith('crear tarea')) {
     let title = text.replace(/^(nueva|crear)\s+tarea\s+/i, '').trim();
     let priority = 'Media';
@@ -36,26 +33,19 @@ function parseCommand(text) {
     title = title.replace(/\s+/g, ' ').replace(/[,.]+$/, '').trim();
     return { type: 'create_task', title, priority, project };
   }
-
   if (t.includes('listar tareas') || t.includes('mis tareas') || t.includes('ver tareas')) {
     return { type: 'list_tasks' };
   }
-
   const completeMatch = t.match(/completar tarea\s+(\d+)/);
   if (completeMatch) return { type: 'update_state', taskId: completeMatch[1], state: 'Completado' };
-
   const startMatch = t.match(/iniciar tarea\s+(\d+)/);
   if (startMatch) return { type: 'update_state', taskId: startMatch[1], state: 'En progreso' };
-
   const noteMatch = t.match(/nota tarea\s+(\d+)\s+(.+)/);
   if (noteMatch) return { type: 'add_note', taskId: noteMatch[1], note: noteMatch[2] };
-
   if (t.includes('ayuda') || t.includes('comandos')) return { type: 'help' };
-
   return { type: 'unknown' };
 }
 
-// ── WEBHOOK VERIFICATION ──
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const mode = searchParams.get('hub.mode');
@@ -67,65 +57,41 @@ export async function GET(request) {
   return new Response('Forbidden', { status: 403 });
 }
 
-// ── RECEIVE MESSAGES ──
 export async function POST(request) {
   try {
     const body = await request.json();
     const entry = body.entry?.[0];
     const changes = entry?.changes?.[0];
     const message = changes?.value?.messages?.[0];
-
     if (!message) return NextResponse.json({ status: 'ok' });
-
     const from = message.from;
     const text = message.type === 'text' ? message.text?.body : null;
-
     if (!text) {
-      await sendMessage(from, '⚠️ Por ahora solo proceso mensajes de texto. Próximamente voz y archivos.');
+      await sendMessage(from, 'Por ahora solo proceso mensajes de texto. Proximamente voz y archivos.');
       return NextResponse.json({ status: 'ok' });
     }
-
     const command = parseCommand(text);
-
     switch (command.type) {
       case 'create_task':
-        await sendMessage(from,
-          `✅ *Tarea creada*\n\n` +
-          `📌 *${command.title}*\n` +
-          `🔴 Prioridad: ${command.priority}\n` +
-          `${command.project ? '🏗 Proyecto: ' + command.project : ''}\n\n` +
-          `_La tarea fue agregada a WorkOS_`
-        );
+        await sendMessage(from, 'Tarea creada: ' + command.title + '\nPrioridad: ' + command.priority + (command.project ? '\nProyecto: ' + command.project : '') + '\n\nLa tarea fue agregada a WorkOS.');
         break;
-
       case 'list_tasks':
-        await sendMessage(from,
-          `📋 *Tus tareas activas*\n\n` +
-          `Para ver el detalle completo abrí WorkOS.\n\n` +
-          `_Tip: decí "nueva tarea [título]" para crear una_`
-        );
+        await sendMessage(from, 'Para ver tus tareas abri WorkOS.\n\nTip: escribe "nueva tarea [titulo]" para crear una.');
         break;
-
       case 'update_state':
-        await sendMessage(from, `✅ Tarea ${command.taskId} marcada como *${command.state}*`);
+        await sendMessage(from, 'Tarea ' + command.taskId + ' marcada como ' + command.state);
         break;
-
       case 'add_note':
-        await sendMessage(from, `📝 Nota agregada a tarea ${command.taskId}: "${command.note}"`);
+        await sendMessage(from, 'Nota agregada a tarea ' + command.taskId + ': ' + command.note);
         break;
-
       case 'help':
-        await sendMessage(from,
-          `🤖 *Comandos disponibles*\n\n` +
-          `📌 *Nueva tarea*\n"nueva tarea llamar al arquitecto Aguamarina urgente"\n\n` +
-          `✅ *Completar*\n"completar tarea 1"\n\n` +
-          `▶️ *Iniciar*\n"iniciar tarea 2"\n\n` +
-          `📝 *Nota*\n"nota tarea 1 se firmó el contrato"\n\n` +
-          `📋 *Ver tareas*\n"mis tareas"\n\n` +
-          `❓ *Ayuda*\n"ayuda"`
-        );
+        await sendMessage(from, 'Comandos disponibles:\n\n- nueva tarea [titulo] [proyecto] [prioridad]\n- completar tarea 1\n- iniciar tarea 2\n- nota tarea 1 [texto]\n- mis tareas\n- ayuda');
         break;
-
       default:
-        await sendMessage(from,
-          `🤔 No entendí el comando.\n\nEscribí
+        await sendMessage(from, 'No entendi el comando. Escribe ayuda para ver los comandos disponibles.');
+    }
+    return NextResponse.json({ status: 'ok' });
+  } catch (error) {
+    return NextResponse.json({ status: 'error' }, { status: 500 });
+  }
+}
