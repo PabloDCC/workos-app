@@ -134,6 +134,9 @@ export default function WorkOS() {
   const [gcalToken, setGcalToken] = useState(null);
   const [gcalConnected, setGcalConnected] = useState(false);
   const [showNewEvent, setShowNewEvent] = useState(false);
+  const [driveToken, setDriveToken] = useState(null);
+  const [driveConnected, setDriveConnected] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
   const [newEvent, setNewEvent] = useState({ title:"", date:"", time:"", duration:60, desc:"" });
   const [settingsTab, setSettingsTab] = useState("areas");
   const [newSettingItem, setNewSettingItem] = useState("");
@@ -142,6 +145,8 @@ export default function WorkOS() {
   const [voiceTranscript, setVoiceTranscript] = useState("");
   const [showVoiceHelp, setShowVoiceHelp] = useState(false);
   const [lastVoiceResult, setLastVoiceResult] = useState("");
+  const [editMode, setEditMode] = useState(false);
+  const [editTask, setEditTask] = useState(null);
   const recRef = useRef(null);
   const dark = settings.darkMode;
 
@@ -166,6 +171,16 @@ export default function WorkOS() {
     } else {
       const saved = localStorage.getItem("gcal_token");
       if (saved) { setGcalToken(saved); setGcalConnected(true); }
+      const savedDrive = localStorage.getItem("drive_token");
+      if (savedDrive) { setDriveToken(savedDrive); setDriveConnected(true); }
+      // Check if returning from Drive OAuth
+      const driveTokenParam = params.get("drive_token");
+      if (driveTokenParam) {
+        setDriveToken(driveTokenParam); setDriveConnected(true);
+        localStorage.setItem("drive_token", driveTokenParam);
+        window.history.replaceState({}, document.title, window.location.pathname);
+        showToast("Google Drive conectado ✓");
+      }
     }
   }, []);
 
@@ -263,6 +278,59 @@ export default function WorkOS() {
     showToast("Google Calendar desconectado");
   };
 
+  const connectDrive = () => {
+    const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+    const redirectUri = encodeURIComponent(appUrl + "/api/auth/drive-callback");
+    const scope = encodeURIComponent("https://www.googleapis.com/auth/drive.file");
+    window.location.href = "https://accounts.google.com/o/oauth2/v2/auth?client_id=" + clientId + "&redirect_uri=" + redirectUri + "&response_type=code&scope=" + scope + "&access_type=offline&prompt=consent";
+  };
+
+  const disconnectDrive = () => {
+    localStorage.removeItem("drive_token");
+    setDriveToken(null); setDriveConnected(false);
+    showToast("Google Drive desconectado");
+  };
+
+  const uploadToDrive = async (file, taskId, noteText) => {
+    if (!driveToken) { showToast("Conectá Google Drive primero", "error"); return; }
+    setUploadingFile(true);
+    try {
+      const metadata = { name: file.name, mimeType: file.type };
+      const form = new FormData();
+      form.append("metadata", new Blob([JSON.stringify(metadata)], { type:"application/json" }));
+      form.append("file", file);
+      const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink", {
+        method:"POST",
+        headers:{ Authorization:"Bearer " + driveToken },
+        body: form
+      });
+      const data = await res.json();
+      if (data.id) {
+        // Make file readable by anyone with link
+        await fetch("https://www.googleapis.com/drive/v3/files/" + data.id + "/permissions", {
+          method:"POST",
+          headers:{ Authorization:"Bearer " + driveToken, "Content-Type":"application/json" },
+          body: JSON.stringify({ role:"reader", type:"anyone" })
+        });
+        const note = {
+          id: uid(), date: nowStr(), author:"Yo",
+          text: noteText || ("📎 Archivo adjunto: " + file.name),
+          attachment: { name: file.name, url: data.webViewLink, type: file.type, driveId: data.id }
+        };
+        setTasks(prev => prev.map(t => t.id===taskId ? {...t, notes:[...(t.notes||[]), note]} : t));
+        setSelectedTask(prev => prev ? {...prev, notes:[...(prev.notes||[]), note]} : prev);
+        showToast("Archivo subido a Drive ✓");
+      } else if (data.error?.code === 401) {
+        setDriveConnected(false); localStorage.removeItem("drive_token");
+        showToast("Sesión de Drive expirada. Reconectá.", "error");
+      } else {
+        showToast("Error al subir archivo", "error");
+      }
+    } catch { showToast("Error al subir archivo", "error"); }
+    setUploadingFile(false);
+  };
+
   const loadGcalEvents = useCallback(async () => {
     if (!gcalToken) return;
     setGcalLoading(true);
@@ -330,6 +398,19 @@ export default function WorkOS() {
   };
 
   const deleteTask = (id) => { setTasks(prev=>prev.filter(t=>t.id!==id)); setSelectedTask(null); showToast("Tarea eliminada"); };
+  const openEdit = (task) => {
+    setEditTask({ ...task });
+    setEditMode(true);
+  };
+
+  const saveEdit = () => {
+    if (!editTask.title.trim()) return;
+    updateTask(editTask.id, editTask);
+    setEditMode(false);
+    setEditTask(null);
+    showToast("Tarea actualizada ✓");
+  };
+
   const clearFilters = () => setFilters({ area:"", priority:"", state:"", assignee:"", project:"", search:"" });
   const activeFilters = Object.values(filters).filter(Boolean).length;
 
@@ -619,11 +700,17 @@ export default function WorkOS() {
                   <span style={{fontSize:13}}>Modo oscuro</span>
                   <button onClick={()=>setSettings(s=>({...s,darkMode:!s.darkMode}))} style={{...S.btn(settings.darkMode?"primary":null),fontSize:12,padding:"6px 14px"}}>{settings.darkMode?"Activo":"Inactivo"}</button>
                 </div>
-                <div style={{padding:"12px 0"}}>
+                <div style={{padding:"12px 0",borderBottom:"1px solid "+c.border}}>
                   <div style={{fontSize:13,fontWeight:700,marginBottom:4}}>Google Calendar</div>
                   <div style={{fontSize:12,color:c.text2,marginBottom:8}}>{gcalConnected?"✅ Conectado":"No conectado"}</div>
                   {!gcalConnected&&<button style={S.btn("primary")} onClick={connectGcal}>Conectar Google Calendar</button>}
                   {gcalConnected&&<button style={S.btn("danger")} onClick={disconnectGcal}>Desconectar</button>}
+                </div>
+                <div style={{padding:"12px 0"}}>
+                  <div style={{fontSize:13,fontWeight:700,marginBottom:4}}>Google Drive</div>
+                  <div style={{fontSize:12,color:c.text2,marginBottom:8}}>{driveConnected?"✅ Conectado — podés adjuntar archivos en las notas":"No conectado"}</div>
+                  {!driveConnected&&<button style={S.btn("primary")} onClick={connectDrive}>Conectar Google Drive</button>}
+                  {driveConnected&&<button style={S.btn("danger")} onClick={disconnectDrive}>Desconectar</button>}
                 </div>
               </div>
             )}
@@ -634,65 +721,147 @@ export default function WorkOS() {
 
       {/* ── TASK DETAIL MODAL ── */}
       {selectedTask&&(
-        <div style={S.modal} onClick={()=>setSelectedTask(null)}>
+        <div style={S.modal} onClick={()=>{setSelectedTask(null);setEditMode(false);setEditTask(null);}}>
           <div style={S.modalBox} onClick={e=>e.stopPropagation()}>
-            <div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}>
-              <h3 style={{fontSize:15,fontWeight:800,flex:1,paddingRight:12,lineHeight:1.3}}>{selectedTask.title}</h3>
-              <button onClick={()=>setSelectedTask(null)} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:c.text2}}>✕</button>
-            </div>
-            <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:14}}>
-              {selectedTask.area&&<span style={S.areaBadge(selectedTask.area)}>{selectedTask.area}</span>}
-              {selectedTask.project&&<span style={S.projBadge}>🏗 {selectedTask.project}</span>}
-              <span style={S.badge(selectedTask.state)}>{selectedTask.state}</span>
-              <span style={{fontSize:11,color:PRIORITY_COLORS[selectedTask.priority],fontWeight:700}}>▲ {selectedTask.priority}</span>
-              {selectedTask.assignee&&<span style={{fontSize:11,color:c.text2}}>👤 {selectedTask.assignee}</span>}
-              {selectedTask.deadline&&<span style={{fontSize:11,color:c.text2}}>📅 {fmtDate(selectedTask.deadline)}</span>}
-            </div>
-            {selectedTask.description&&<p style={{fontSize:13,color:c.text2,marginBottom:14,lineHeight:1.6,background:c.surface2,padding:"10px 12px",borderRadius:8}}>{selectedTask.description}</p>}
-            <div style={{marginBottom:14}}>
-              <label style={S.label}>Proyecto</label>
-              <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-                <button onClick={()=>updateTask(selectedTask.id,{project:""})} style={{background:!selectedTask.project?"#0369a1":c.surface2,color:!selectedTask.project?"#fff":c.text2,border:"none",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>Sin proyecto</button>
-                {(settings.projects||DEFAULT_PROJECTS).map(p=>(
-                  <button key={p} onClick={()=>updateTask(selectedTask.id,{project:p})} style={{background:selectedTask.project===p?"#0369a1":c.surface2,color:selectedTask.project===p?"#fff":c.text2,border:"none",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>{p}</button>
-                ))}
+
+            {/* HEADER */}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+              {!editMode
+                ? <h3 style={{fontSize:15,fontWeight:800,flex:1,paddingRight:12,lineHeight:1.3}}>{selectedTask.title}</h3>
+                : <span style={{fontSize:13,fontWeight:700,color:c.accent}}>✏️ Editando tarea</span>
+              }
+              <div style={{display:"flex",gap:6}}>
+                {!editMode&&<button onClick={()=>openEdit(selectedTask)} style={{...S.btn("gold"),padding:"6px 12px",fontSize:11}}>✏️ Editar</button>}
+                <button onClick={()=>{setSelectedTask(null);setEditMode(false);setEditTask(null);}} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:c.text2}}>✕</button>
               </div>
             </div>
-            <div style={{marginBottom:14}}>
-              <label style={S.label}>Estado</label>
-              <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-                {settings.states.map(s=>(
-                  <button key={s} onClick={()=>updateTask(selectedTask.id,{state:s})} style={{background:selectedTask.state===s?(STATE_COLORS[s]?.bg||c.accentLight):c.surface2,color:selectedTask.state===s?(STATE_COLORS[s]?.color||c.accent):c.text2,border:"1.5px solid "+(selectedTask.state===s?(STATE_COLORS[s]?.color||c.accent):c.border),borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>{s}</button>
-                ))}
+
+            {/* VIEW MODE */}
+            {!editMode&&(<>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:14}}>
+                {selectedTask.area&&<span style={S.areaBadge(selectedTask.area)}>{selectedTask.area}</span>}
+                {selectedTask.project&&<span style={S.projBadge}>🏗 {selectedTask.project}</span>}
+                <span style={S.badge(selectedTask.state)}>{selectedTask.state}</span>
+                <span style={{fontSize:11,color:PRIORITY_COLORS[selectedTask.priority],fontWeight:700}}>▲ {selectedTask.priority}</span>
+                {selectedTask.assignee&&selectedTask.assignee!=="Sin asignar"&&<span style={{fontSize:11,color:c.text2}}>👤 {selectedTask.assignee}</span>}
+                {selectedTask.deadline&&<span style={{fontSize:11,color:c.text2}}>📅 {fmtDate(selectedTask.deadline)}</span>}
               </div>
-            </div>
-            <div style={{marginBottom:16}}>
-              <label style={S.label}>Prioridad</label>
-              <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-                {settings.priorities.map(p=>(
-                  <button key={p} onClick={()=>updateTask(selectedTask.id,{priority:p})} style={{background:selectedTask.priority===p?(PRIORITY_COLORS[p]||c.accent):c.surface2,color:selectedTask.priority===p?"#fff":c.text2,border:"none",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>{p}</button>
-                ))}
+              {selectedTask.description&&<p style={{fontSize:13,color:c.text2,marginBottom:14,lineHeight:1.6,background:c.surface2,padding:"10px 12px",borderRadius:8}}>{selectedTask.description}</p>}
+              <div style={{marginBottom:14}}>
+                <label style={S.label}>Estado</label>
+                <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                  {settings.states.map(s=>(
+                    <button key={s} onClick={()=>updateTask(selectedTask.id,{state:s})} style={{background:selectedTask.state===s?(STATE_COLORS[s]?.bg||c.accentLight):c.surface2,color:selectedTask.state===s?(STATE_COLORS[s]?.color||c.accent):c.text2,border:"1.5px solid "+(selectedTask.state===s?(STATE_COLORS[s]?.color||c.accent):c.border),borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>{s}</button>
+                  ))}
+                </div>
               </div>
-            </div>
-            <div>
-              <label style={S.label}>Notas de avance ({selectedTask.notes?.length||0})</label>
-              <div style={{maxHeight:200,overflowY:"auto",marginBottom:10}}>
-                {(!selectedTask.notes||selectedTask.notes.length===0)&&<p style={{color:c.text2,fontSize:12,marginBottom:8}}>Sin notas aún</p>}
-                {selectedTask.notes?.map((n,i)=>(
-                  <div key={i} style={{background:c.surface2,borderLeft:"3px solid "+c.accent,padding:"8px 12px",borderRadius:"0 8px 8px 0",marginBottom:8}}>
-                    <div style={{fontSize:10,color:c.text2,marginBottom:3,fontWeight:700}}>📅 {fmtDate(n.date)} · {n.author}</div>
-                    <div style={{fontSize:13,lineHeight:1.5}}>{n.text}</div>
-                  </div>
-                ))}
+              <div style={{marginBottom:16}}>
+                <label style={S.label}>Prioridad</label>
+                <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                  {settings.priorities.map(p=>(
+                    <button key={p} onClick={()=>updateTask(selectedTask.id,{priority:p})} style={{background:selectedTask.priority===p?(PRIORITY_COLORS[p]||c.accent):c.surface2,color:selectedTask.priority===p?"#fff":c.text2,border:"none",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>{p}</button>
+                  ))}
+                </div>
               </div>
-              <div style={{display:"flex",gap:8}}>
-                <input style={{...S.input,flex:1}} value={noteInput} onChange={e=>setNoteInput(e.target.value)} placeholder="Agregar nota de avance..." onKeyDown={e=>e.key==="Enter"&&addNote(selectedTask.id)}/>
-                <button style={S.btn("primary")} onClick={()=>addNote(selectedTask.id)}>+</button>
+              <div>
+                <label style={S.label}>Notas de avance ({selectedTask.notes?.length||0})</label>
+                <div style={{maxHeight:220,overflowY:"auto",marginBottom:10}}>
+                  {(!selectedTask.notes||selectedTask.notes.length===0)&&<p style={{color:c.text2,fontSize:12,marginBottom:8}}>Sin notas aún</p>}
+                  {selectedTask.notes?.map((n,i)=>(
+                    <div key={i} style={{background:c.surface2,borderLeft:"3px solid "+c.accent,padding:"8px 12px",borderRadius:"0 8px 8px 0",marginBottom:8}}>
+                      <div style={{fontSize:10,color:c.text2,marginBottom:3,fontWeight:700}}>📅 {fmtDate(n.date)} · {n.author}</div>
+                      <div style={{fontSize:13,lineHeight:1.5}}>{n.text}</div>
+                      {n.attachment&&(
+                        <a href={n.attachment.url} target="_blank" rel="noreferrer" style={{display:"inline-flex",alignItems:"center",gap:5,marginTop:6,background:"#e0f2fe",color:"#0369a1",borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:700,textDecoration:"none"}}>
+                          {n.attachment.type?.includes("image")?"🖼":n.attachment.type?.includes("pdf")?"📄":n.attachment.type?.includes("sheet")||n.attachment.name?.includes(".xls")?"📊":n.attachment.type?.includes("word")||n.attachment.name?.includes(".doc")?"📝":"📎"}
+                          {" "}{n.attachment.name}
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:"flex",gap:8,marginBottom:8}}>
+                  <input style={{...S.input,flex:1}} value={noteInput} onChange={e=>setNoteInput(e.target.value)} placeholder="Agregar nota de avance..." onKeyDown={e=>e.key==="Enter"&&addNote(selectedTask.id)}/>
+                  <button style={S.btn("primary")} onClick={()=>addNote(selectedTask.id)}>+</button>
+                </div>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  {driveConnected ? (
+                    <>
+                      <label style={{...S.btn("gold"),padding:"7px 12px",cursor:"pointer",fontSize:11,display:"inline-block"}}>
+                        {uploadingFile?"⏳ Subiendo...":"📎 Adjuntar archivo"}
+                        <input type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" style={{display:"none"}} disabled={uploadingFile}
+                          onChange={e=>{const f=e.target.files[0]; if(f) uploadToDrive(f, selectedTask.id, ""); e.target.value="";}}/>
+                      </label>
+                      <span style={{fontSize:10,color:c.text2}}>Fotos, PDF, Word, Excel</span>
+                    </>
+                  ) : (
+                    <button onClick={connectDrive} style={{...S.btn(null),fontSize:11,padding:"7px 12px",border:"1px dashed "+c.border}}>
+                      🔗 Conectar Google Drive para adjuntar archivos
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-            <div style={{marginTop:14,paddingTop:12,borderTop:"1px solid "+c.border,display:"flex",justifyContent:"flex-end"}}>
-              <button style={S.btn("danger")} onClick={()=>deleteTask(selectedTask.id)}>🗑 Eliminar</button>
-            </div>
+              <div style={{marginTop:14,paddingTop:12,borderTop:"1px solid "+c.border,display:"flex",justifyContent:"flex-end"}}>
+                <button style={S.btn("danger")} onClick={()=>deleteTask(selectedTask.id)}>🗑 Eliminar</button>
+              </div>
+            </>)}
+
+            {/* EDIT MODE */}
+            {editMode&&editTask&&(<>
+              <div style={{marginBottom:10}}>
+                <label style={S.label}>Título *</label>
+                <input style={S.input} value={editTask.title} onChange={e=>setEditTask(t=>({...t,title:e.target.value}))} placeholder="Título de la tarea"/>
+              </div>
+              <div style={{marginBottom:10}}>
+                <label style={S.label}>Descripción</label>
+                <textarea style={{...S.input,resize:"vertical",minHeight:70}} value={editTask.description||""} onChange={e=>setEditTask(t=>({...t,description:e.target.value}))} placeholder="Descripción detallada..."/>
+              </div>
+              <div style={{...S.grid2,marginBottom:10}}>
+                <div>
+                  <label style={S.label}>Área</label>
+                  <select style={S.select} value={editTask.area||""} onChange={e=>setEditTask(t=>({...t,area:e.target.value}))}>
+                    <option value="">Sin área</option>
+                    {settings.areas.map(a=><option key={a}>{a}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={S.label}>Proyecto</label>
+                  <select style={S.select} value={editTask.project||""} onChange={e=>setEditTask(t=>({...t,project:e.target.value}))}>
+                    <option value="">Sin proyecto</option>
+                    {(settings.projects||DEFAULT_PROJECTS).map(p=><option key={p}>{p}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={S.label}>Prioridad</label>
+                  <select style={S.select} value={editTask.priority} onChange={e=>setEditTask(t=>({...t,priority:e.target.value}))}>
+                    {settings.priorities.map(p=><option key={p}>{p}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={S.label}>Estado</label>
+                  <select style={S.select} value={editTask.state} onChange={e=>setEditTask(t=>({...t,state:e.target.value}))}>
+                    {settings.states.map(s=><option key={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={S.label}>Asignado a</label>
+                  <select style={S.select} value={editTask.assignee||"Yo"} onChange={e=>setEditTask(t=>({...t,assignee:e.target.value}))}>
+                    {settings.team.map(m=><option key={m}>{m}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={S.label}>Fecha límite</label>
+                  <input type="date" style={S.input} value={editTask.deadline||""} onChange={e=>setEditTask(t=>({...t,deadline:e.target.value}))}/>
+                </div>
+              </div>
+              <div style={{display:"flex",gap:8,marginTop:16,paddingTop:12,borderTop:"1px solid "+c.border}}>
+                <button style={S.btn("primary")} onClick={saveEdit}>💾 Guardar cambios</button>
+                <button style={S.btn(null)} onClick={()=>{setEditMode(false);setEditTask(null);}}>Cancelar</button>
+                <div style={{flex:1}}/>
+                <button style={S.btn("danger")} onClick={()=>deleteTask(selectedTask.id)}>🗑</button>
+              </div>
+            </>)}
+
           </div>
         </div>
       )}
