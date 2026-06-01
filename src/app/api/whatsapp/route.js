@@ -10,7 +10,7 @@ async function sendMessage(to, text) {
     headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       messaging_product: 'whatsapp',
-      to,
+      to: to,
       type: 'text',
       text: { body: text }
     })
@@ -68,34 +68,36 @@ export async function POST(request) {
     const message = changes?.value?.messages?.[0];
     if (!message) return NextResponse.json({ status: 'ok' });
     const from = message.from;
-    console.log('Mensaje recibido de:', from);
+    const to = '+' + from;
+    console.log('Mensaje recibido de:', from, '-> enviando a:', to);
     const text = message.type === 'text' ? message.text?.body : null;
     if (!text) {
-      await sendMessage(from, 'Por ahora solo proceso mensajes de texto. Proximamente voz y archivos.');
+      await sendMessage(to, 'Por ahora solo proceso mensajes de texto.');
       return NextResponse.json({ status: 'ok' });
     }
     const command = parseCommand(text);
     switch (command.type) {
       case 'create_task':
-        await sendMessage(from, 'Tarea creada: ' + command.title + '\nPrioridad: ' + command.priority + (command.project ? '\nProyecto: ' + command.project : '') + '\n\nLa tarea fue agregada a WorkOS.');
+        await sendMessage(to, 'Tarea creada: ' + command.title + '\nPrioridad: ' + command.priority + (command.project ? '\nProyecto: ' + command.project : '') + '\n\nAgregada a WorkOS.');
         break;
       case 'list_tasks':
-        await sendMessage(from, 'Para ver tus tareas abri WorkOS.\n\nTip: escribe "nueva tarea [titulo]" para crear una.');
+        await sendMessage(to, 'Para ver tus tareas abri WorkOS.\n\nTip: escribe "nueva tarea [titulo]" para crear una.');
         break;
       case 'update_state':
-        await sendMessage(from, 'Tarea ' + command.taskId + ' marcada como ' + command.state);
+        await sendMessage(to, 'Tarea ' + command.taskId + ' marcada como ' + command.state);
         break;
       case 'add_note':
-        await sendMessage(from, 'Nota agregada a tarea ' + command.taskId + ': ' + command.note);
+        await sendMessage(to, 'Nota agregada a tarea ' + command.taskId + ': ' + command.note);
         break;
       case 'help':
-        await sendMessage(from, 'Comandos disponibles:\n\n- nueva tarea [titulo] [proyecto] [prioridad]\n- completar tarea 1\n- iniciar tarea 2\n- nota tarea 1 [texto]\n- mis tareas\n- ayuda');
+        await sendMessage(to, 'Comandos disponibles:\n\n- nueva tarea [titulo] [proyecto] [prioridad]\n- completar tarea 1\n- iniciar tarea 2\n- nota tarea 1 [texto]\n- mis tareas\n- ayuda');
         break;
       default:
-        await sendMessage(from, 'No entendi el comando. Escribe ayuda para ver los comandos disponibles.');
+        await sendMessage(to, 'No entendi el comando. Escribe ayuda para ver los comandos disponibles.');
     }
     return NextResponse.json({ status: 'ok' });
   } catch (error) {
+    console.log('Error:', error.message);
     return NextResponse.json({ status: 'error' }, { status: 500 });
   }
 }
