@@ -68,7 +68,9 @@ export async function POST(request) {
     const message = changes?.value?.messages?.[0];
     if (!message) return NextResponse.json({ status: 'ok' });
     const from = message.from;
-    const to = from;
+    const to = '+' + from;
+    console.log('Enviando a:', to);
+    console.log('Numero en Meta deberia ser:', '+54 9 3471 51 7214');
     console.log('Mensaje recibido de:', from, '-> enviando a:', to);
     const text = message.type === 'text' ? message.text?.body : null;
     if (!text) {
