@@ -68,7 +68,15 @@ export async function POST(request) {
     const message = changes?.value?.messages?.[0];
     if (!message) return NextResponse.json({ status: 'ok' });
     const from = message.from;
-    const to = '+' + from;
+    // Formatear número argentino: 5493471517214 -> +54 9 3471 51 7214
+let to = from;
+if (from.startsWith('549')) {
+  const num = from.slice(3); // saca el 549
+  to = '+54 9 ' + num.slice(0,4) + ' ' + num.slice(4,6) + ' ' + num.slice(6);
+} else {
+  to = '+' + from;
+}
+console.log('Numero formateado:', to);
     console.log('Enviando a:', to);
     console.log('Numero en Meta deberia ser:', '+54 9 3471 51 7214');
     console.log('Mensaje recibido de:', from, '-> enviando a:', to);
