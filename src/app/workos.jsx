@@ -164,17 +164,56 @@ export default function WorkOS() {
     })();
   }, []);
 
-  // ── GOOGLE AUTH ──
+  // ── GOOGLE AUTH + AUTO REFRESH ──
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     const token = params.get("access_token");
     const driveTokenParam = params.get("drive_token");
-    if (token) { setGcalToken(token); setGcalConnected(true); localStorage.setItem("gcal_token", token); showToast("Google Calendar conectado ✓"); }
-    else { const s = localStorage.getItem("gcal_token"); if (s) { setGcalToken(s); setGcalConnected(true); } }
-    if (driveTokenParam) { setDriveToken(driveTokenParam); setDriveConnected(true); localStorage.setItem("drive_token", driveTokenParam); showToast("Google Drive conectado ✓"); }
-    else { const s = localStorage.getItem("drive_token"); if (s) { setDriveToken(s); setDriveConnected(true); } }
-    if (token || driveTokenParam) window.history.replaceState({}, document.title, window.location.pathname);
+
+    const autoRefresh = async () => {
+      // Try to refresh GCal token from Supabase
+      try {
+        const gcalRes = await fetch("/api/auth/refresh?service=gcal");
+        const gcalData = await gcalRes.json();
+        if (gcalData.access_token) {
+          setGcalToken(gcalData.access_token);
+          setGcalConnected(true);
+          localStorage.setItem("gcal_token", gcalData.access_token);
+        }
+      } catch {}
+      // Try to refresh Drive token from Supabase
+      try {
+        const driveRes = await fetch("/api/auth/refresh?service=drive");
+        const driveData = await driveRes.json();
+        if (driveData.access_token) {
+          setDriveToken(driveData.access_token);
+          setDriveConnected(true);
+          localStorage.setItem("drive_token", driveData.access_token);
+        }
+      } catch {}
+    };
+
+    if (token) {
+      setGcalToken(token); setGcalConnected(true);
+      localStorage.setItem("gcal_token", token);
+      showToast("Google Calendar conectado ✓");
+    }
+    if (driveTokenParam) {
+      setDriveToken(driveTokenParam); setDriveConnected(true);
+      localStorage.setItem("drive_token", driveTokenParam);
+      showToast("Google Drive conectado ✓");
+    }
+    if (token || driveTokenParam) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else {
+      // No new tokens — try auto refresh from Supabase
+      autoRefresh();
+    }
+
+    // Auto refresh every 45 minutes
+    const interval = setInterval(autoRefresh, 45 * 60 * 1000);
+    return () => clearInterval(interval);
   }, []);
 
   const showToast = (msg, type="success") => { setToast({ msg, type }); setTimeout(()=>setToast(null), 3500); };
