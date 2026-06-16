@@ -292,14 +292,23 @@ export default function WorkOS() {
   };
 
   // ── GCAL ──
-  const connectGcal = () => {
+  const connectGoogle = () => {
     const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
     const appUrl = process.env.NEXT_PUBLIC_APP_URL;
     const redirectUri = encodeURIComponent(appUrl + "/api/auth/callback");
-    const scope = encodeURIComponent("https://www.googleapis.com/auth/calendar");
+    // Request both Calendar and Drive scopes in one authorization
+    const scope = encodeURIComponent("https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/drive.file");
     window.location.href = "https://accounts.google.com/o/oauth2/v2/auth?client_id=" + clientId + "&redirect_uri=" + redirectUri + "&response_type=code&scope=" + scope + "&access_type=offline&prompt=consent";
   };
-  const disconnectGcal = () => { localStorage.removeItem("gcal_token"); setGcalToken(null); setGcalConnected(false); setGcalEvents([]); showToast("Google Calendar desconectado"); };
+  const disconnectGoogle = () => {
+    localStorage.removeItem("gcal_token");
+    localStorage.removeItem("drive_token");
+    setGcalToken(null); setGcalConnected(false); setGcalEvents([]);
+    setDriveToken(null); setDriveConnected(false);
+    showToast("Google desconectado");
+  };
+  const connectGcal = connectGoogle;
+  const disconnectGcal = disconnectGoogle;
 
   const loadGcalEvents = useCallback(async () => {
     if (!gcalToken) return;
@@ -329,14 +338,8 @@ export default function WorkOS() {
   };
 
   // ── DRIVE ──
-  const connectDrive = () => {
-    const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-    const redirectUri = encodeURIComponent(appUrl + "/api/auth/drive-callback");
-    const scope = encodeURIComponent("https://www.googleapis.com/auth/drive.file");
-    window.location.href = "https://accounts.google.com/o/oauth2/v2/auth?client_id=" + clientId + "&redirect_uri=" + redirectUri + "&response_type=code&scope=" + scope + "&access_type=offline&prompt=consent";
-  };
-  const disconnectDrive = () => { localStorage.removeItem("drive_token"); setDriveToken(null); setDriveConnected(false); showToast("Google Drive desconectado"); };
+  const connectDrive = connectGoogle;
+  const disconnectDrive = disconnectGoogle;
 
   const uploadToDrive = async (file, taskId) => {
     if (!driveToken) { showToast("Conectá Google Drive primero","error"); return; }
@@ -733,7 +736,7 @@ export default function WorkOS() {
               <div style={{fontSize:40,marginBottom:12}}>📅</div>
               <div style={{fontWeight:700,fontSize:16,marginBottom:8}}>Conectar Google Calendar</div>
               <div style={{color:c.text2,fontSize:13,marginBottom:20}}>Vinculá tu cuenta para ver y crear eventos desde WorkOS.</div>
-              <button style={{...S.btn("primary"),padding:"12px 28px",fontSize:14}} onClick={connectGcal}>Conectar con Google</button>
+              <button style={{...S.btn("primary"),padding:"12px 28px",fontSize:14}} onClick={connectGoogle}>Conectar con Google</button>
             </div>
           ):(<>
             <div style={{...S.card,background:c.accentLight,border:"1px solid "+c.accent,marginBottom:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -808,17 +811,15 @@ export default function WorkOS() {
                   <div style={{fontSize:12,color:c.text2,marginBottom:4}}>Datos sincronizados via Supabase — disponibles en todos tus dispositivos.</div>
                   <div style={{fontSize:12,color:syncStatus==="ok"?"#16a34a":"#dc2626",fontWeight:700}}>{syncStatus==="ok"?"✅ Conectado y sincronizado":"❌ Error de conexión"}</div>
                 </div>
-                <div style={{padding:"12px 0",borderBottom:"1px solid "+c.border}}>
-                  <div style={{fontSize:13,fontWeight:700,marginBottom:4}}>Google Calendar</div>
-                  <div style={{fontSize:12,color:c.text2,marginBottom:8}}>{gcalConnected?"✅ Conectado":"No conectado"}</div>
-                  {!gcalConnected&&<button style={S.btn("primary")} onClick={connectGcal}>Conectar Google Calendar</button>}
-                  {gcalConnected&&<button style={S.btn("danger")} onClick={disconnectGcal}>Desconectar</button>}
-                </div>
                 <div style={{padding:"12px 0"}}>
-                  <div style={{fontSize:13,fontWeight:700,marginBottom:4}}>Google Drive</div>
-                  <div style={{fontSize:12,color:c.text2,marginBottom:8}}>{driveConnected?"✅ Conectado — podés adjuntar archivos":"No conectado"}</div>
-                  {!driveConnected&&<button style={S.btn("primary")} onClick={connectDrive}>Conectar Google Drive</button>}
-                  {driveConnected&&<button style={S.btn("danger")} onClick={disconnectDrive}>Desconectar</button>}
+                  <div style={{fontSize:13,fontWeight:700,marginBottom:6}}>Google — Calendar y Drive</div>
+                  <div style={{fontSize:12,color:c.text2,marginBottom:10}}>Una sola conexión activa Calendar y Drive al mismo tiempo.</div>
+                  <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:8}}>
+                    <div style={{fontSize:12}}>{gcalConnected?"✅ Calendar conectado":"❌ Calendar desconectado"}</div>
+                    <div style={{fontSize:12}}>{driveConnected?"✅ Drive conectado":"❌ Drive desconectado"}</div>
+                  </div>
+                  {(!gcalConnected||!driveConnected)&&<button style={{...S.btn("primary"),marginBottom:8}} onClick={connectGoogle}>🔗 Conectar con Google</button>}
+                  {(gcalConnected||driveConnected)&&<button style={S.btn("danger")} onClick={disconnectGoogle}>Desconectar Google</button>}
                 </div>
               </div>
             )}
