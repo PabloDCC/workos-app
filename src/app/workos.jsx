@@ -4,6 +4,44 @@ import { useState, useEffect, useRef, useCallback } from "react";
 const APP_NAME = "WorkOS";
 const APP_SUBTITLE = "Inmobiliaria · Construcción · Servicios";
 
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+// ── SUPABASE CLIENT ──────────────────────────────────────────────────────────
+const sb = {
+  from: (table) => ({
+    select: async (cols = '*') => {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=${cols}`, {
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+      });
+      return res.json();
+    },
+    upsert: async (data) => {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+        method: 'POST',
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates' },
+        body: JSON.stringify(data)
+      });
+      return res.status < 300;
+    },
+    delete: async (id) => {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+        method: 'DELETE',
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+      });
+      return res.status < 300;
+    },
+    update: async (id, data) => {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+        method: 'PATCH',
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+      return res.status < 300;
+    }
+  })
+};
+
 const DEFAULT_AREAS = ["Desarrollo de Proyectos","Construcción","Ventas y Comercial","Legal y Notaría","Finanzas","Marketing","Postventa","Permisos","Operaciones","Otro"];
 const DEFAULT_PRIORITIES = ["Urgente","Alta","Media","Baja"];
 const DEFAULT_STATES = ["Pendiente","En progreso","En revisión","Bloqueado","Completado"];
@@ -24,242 +62,179 @@ const AREA_BG = {
   "Permisos":"#fdf4ff","Operaciones":"#f0fdf4","Otro":"#f8fafc",
 };
 
-const store = {
-  get: (key, fallback) => {
-    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
-    catch { return fallback; }
-  },
-  set: (key, val) => {
-    try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
-  }
-};
-
-const SAMPLE_TASKS = [
-  { id:1, title:"Tramitar licencia de construcción Arboleda", area:"Permisos", priority:"Urgente", state:"En progreso", assignee:"Yo", deadline:"2026-06-15", project:"Aguamarina", description:"Gestión ante el municipio.", notes:[{id:1,date:"2026-05-10",author:"Yo",text:"Solicitud entregada con planos firmados."},{id:2,date:"2026-05-22",author:"Yo",text:"En revisión técnica, 2 semanas más."}], created:"2026-05-01" },
-  { id:2, title:"Revisión contrato de obra Torre Sur", area:"Legal y Notaría", priority:"Alta", state:"Pendiente", assignee:"Yo", deadline:"2026-06-01", project:"Turquesa", description:"Revisión con contratista principal.", notes:[], created:"2026-05-15" },
-  { id:3, title:"Campaña de lanzamiento Residencial Cumbres", area:"Marketing", priority:"Media", state:"En progreso", assignee:"Sin asignar", deadline:"2026-06-10", project:"Jade", description:"Campaña digital de lanzamiento.", notes:[{id:1,date:"2026-05-15",author:"Yo",text:"Brief enviado a agencia."}], created:"2026-05-10" },
-];
-
 const fmtDate = d => { if (!d) return ""; const [y,m,day]=d.split("-"); return day+"/"+m+"/"+y; };
+const fmtDateTime = d => { if (!d) return ""; const dt = new Date(d); return dt.toLocaleDateString("es-AR") + " " + dt.toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"}); };
 const nowStr = () => new Date().toISOString().split("T")[0];
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
 
-// ── VOICE COMMAND PARSER (100% local, no API needed) ──────────────────────
-function parseCommand(text, tasks, settings) {
+// ── VOICE COMMAND PARSER ─────────────────────────────────────────────────────
+function parseCommand(text, settings) {
   const t = text.toLowerCase().trim();
-
-  // NAVIGATE
   if (t.includes("ir a agenda") || t.includes("abrir agenda")) return { type:"navigate", view:"agenda" };
   if (t.includes("ir a tareas") || t.includes("abrir tareas")) return { type:"navigate", view:"tasks" };
   if (t.includes("ir a inicio") || t.includes("dashboard")) return { type:"navigate", view:"dashboard" };
-  if (t.includes("ir a ajustes")) return { type:"navigate", view:"settings" };
-
-  // CLEAR FILTERS
+  if (t.includes("ir a notas") || t.includes("abrir notas")) return { type:"navigate", view:"notes" };
   if (t.includes("limpiar filtro") || t.includes("quitar filtro") || t.includes("mostrar todas")) return { type:"clear_filters" };
-
-  // FILTER BY PROJECT
   const allProjects = settings.projects || DEFAULT_PROJECTS;
   for (const p of allProjects) {
-    if (t.includes(p.toLowerCase())) {
-      if (t.includes("mostrar") || t.includes("filtrar") || t.includes("ver tareas")) {
-        return { type:"filter_project", project:p };
-      }
+    if (t.includes(p.toLowerCase()) && (t.includes("mostrar") || t.includes("filtrar") || t.includes("ver tareas"))) {
+      return { type:"filter_project", project:p };
     }
   }
-
-  // COMPLETE TASK
-  const completeMatch = t.match(/completar tarea\s+(\d+)/);
-  if (completeMatch) return { type:"update_state", taskId: parseInt(completeMatch[1]), state:"Completado" };
-
-  // START TASK
-  const startMatch = t.match(/iniciar tarea\s+(\d+)/);
-  if (startMatch) return { type:"update_state", taskId: parseInt(startMatch[1]), state:"En progreso" };
-
-  // BLOCK TASK
-  const blockMatch = t.match(/bloquear tarea\s+(\d+)/);
-  if (blockMatch) return { type:"update_state", taskId: parseInt(blockMatch[1]), state:"Bloqueado" };
-
-  // ADD NOTE
-  const noteMatch = t.match(/nota tarea\s+(\d+)\s+(.+)/);
-  if (noteMatch) return { type:"add_note", taskId: parseInt(noteMatch[1]), note: noteMatch[2] };
-
-  // NEW TASK
+  const completeMatch = t.match(/completar tarea\s+(\w+)/);
+  if (completeMatch) return { type:"update_state", taskId:completeMatch[1], state:"Completado" };
+  const startMatch = t.match(/iniciar tarea\s+(\w+)/);
+  if (startMatch) return { type:"update_state", taskId:startMatch[1], state:"En progreso" };
+  const blockMatch = t.match(/bloquear tarea\s+(\w+)/);
+  if (blockMatch) return { type:"update_state", taskId:blockMatch[1], state:"Bloqueado" };
+  const noteMatch = t.match(/nota tarea\s+(\w+)\s+(.+)/);
+  if (noteMatch) return { type:"add_note", taskId:noteMatch[1], note:noteMatch[2] };
+  const quickNoteMatch = t.match(/^(anotar|nota rápida|apuntar)\s+(.+)/);
+  if (quickNoteMatch) return { type:"quick_note", text:quickNoteMatch[2] };
   if (t.startsWith("nueva tarea") || t.startsWith("crear tarea") || t.startsWith("agregar tarea")) {
     let title = text.replace(/^(nueva|crear|agregar)\s+tarea\s+/i, "").trim();
-    let priority = "Media";
-    let project = "";
-    let area = "";
-
-    // Detect priority
-    if (/urgente/i.test(title)) { priority = "Urgente"; title = title.replace(/urgente/i,"").trim(); }
-    else if (/alta/i.test(title)) { priority = "Alta"; title = title.replace(/alta/i,"").trim(); }
-    else if (/baja/i.test(title)) { priority = "Baja"; title = title.replace(/baja/i,"").trim(); }
-
-    // Detect project
-    for (const p of allProjects) {
-      const re = new RegExp(p, "i");
-      if (re.test(title)) { project = p; title = title.replace(re,"").trim(); }
-    }
-
-    // Detect area
-    const allAreas = settings.areas || DEFAULT_AREAS;
-    for (const a of allAreas) {
-      const re = new RegExp(a, "i");
-      if (re.test(title)) { area = a; title = title.replace(re,"").trim(); }
-    }
-
-    // Clean extra spaces and punctuation
+    let priority = "Media"; let project = ""; let area = "";
+    if (/urgente/i.test(title)) { priority="Urgente"; title=title.replace(/urgente/i,"").trim(); }
+    else if (/alta/i.test(title)) { priority="Alta"; title=title.replace(/alta/i,"").trim(); }
+    else if (/baja/i.test(title)) { priority="Baja"; title=title.replace(/baja/i,"").trim(); }
+    for (const p of allProjects) { const re=new RegExp(p,"i"); if(re.test(title)){ project=p; title=title.replace(re,"").trim(); } }
     title = title.replace(/\s+/g," ").replace(/[,.]+$/,"").trim();
-    if (!title) return { type:"error", msg:"No entendí el título de la tarea. Decí: nueva tarea [título]" };
+    if (!title) return { type:"error", msg:"No entendí el título. Decí: nueva tarea [título]" };
     return { type:"create_task", title, priority, project, area };
   }
-
-  return { type:"unknown", msg:'No entendí el comando. Tocá "? ayuda" para ver los comandos disponibles.' };
+  return { type:"unknown", msg:'No entendí el comando. Tocá "? ayuda" para ver los comandos.' };
 }
 
-// ── MAIN APP ──────────────────────────────────────────────────────────────
+// ── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function WorkOS() {
   const [view, setView] = useState("dashboard");
   const [tasks, setTasks] = useState([]);
+  const [quickNotes, setQuickNotes] = useState([]);
   const [settings, setSettings] = useState({ areas:DEFAULT_AREAS, priorities:DEFAULT_PRIORITIES, states:DEFAULT_STATES, team:DEFAULT_TEAM, projects:DEFAULT_PROJECTS, darkMode:false });
   const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("sync"); // sync | ok | error
   const [selectedTask, setSelectedTask] = useState(null);
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [filters, setFilters] = useState({ area:"", priority:"", state:"", assignee:"", project:"", search:"" });
   const [newTask, setNewTask] = useState({ title:"", area:"", priority:"Media", state:"Pendiente", assignee:"Yo", deadline:"", description:"", project:"" });
   const [noteInput, setNoteInput] = useState("");
+  const [editMode, setEditMode] = useState(false);
+  const [editTask, setEditTask] = useState(null);
   const [gcalEvents, setGcalEvents] = useState([]);
   const [gcalLoading, setGcalLoading] = useState(false);
   const [gcalToken, setGcalToken] = useState(null);
   const [gcalConnected, setGcalConnected] = useState(false);
   const [showNewEvent, setShowNewEvent] = useState(false);
+  const [newEvent, setNewEvent] = useState({ title:"", date:"", time:"", duration:60, desc:"" });
   const [driveToken, setDriveToken] = useState(null);
   const [driveConnected, setDriveConnected] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
-  const [newEvent, setNewEvent] = useState({ title:"", date:"", time:"", duration:60, desc:"" });
   const [settingsTab, setSettingsTab] = useState("areas");
   const [newSettingItem, setNewSettingItem] = useState("");
   const [toast, setToast] = useState(null);
   const [listening, setListening] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState("");
   const [showVoiceHelp, setShowVoiceHelp] = useState(false);
-  const [lastVoiceResult, setLastVoiceResult] = useState("");
-  const [editMode, setEditMode] = useState(false);
-  const [editTask, setEditTask] = useState(null);
+  const [newQuickNote, setNewQuickNote] = useState("");
   const recRef = useRef(null);
   const dark = settings.darkMode;
 
-  // ── LOAD ──
+  // ── LOAD FROM SUPABASE ──
   useEffect(() => {
-    const t = store.get("wos_tasks", SAMPLE_TASKS);
-    const s = store.get("wos_settings", { areas:DEFAULT_AREAS, priorities:DEFAULT_PRIORITIES, states:DEFAULT_STATES, team:DEFAULT_TEAM, projects:DEFAULT_PROJECTS, darkMode:false });
-    if (!s.projects) s.projects = DEFAULT_PROJECTS;
-    setTasks(t); setSettings(s); setLoaded(true);
+    (async () => {
+      setSyncing(true);
+      try {
+        const [tasksData, notesData, settingsData] = await Promise.all([
+          sb.from('tasks').select('*'),
+          sb.from('quick_notes').select('*'),
+          sb.from('settings').select('*'),
+        ]);
+        if (Array.isArray(tasksData)) setTasks(tasksData);
+        if (Array.isArray(notesData)) setQuickNotes(notesData.sort((a,b) => new Date(b.created_at) - new Date(a.created_at)));
+        if (Array.isArray(settingsData) && settingsData.length > 0) {
+          setSettings({ ...{ areas:DEFAULT_AREAS, priorities:DEFAULT_PRIORITIES, states:DEFAULT_STATES, team:DEFAULT_TEAM, projects:DEFAULT_PROJECTS, darkMode:false }, ...settingsData[0].data });
+        }
+        setSyncStatus("ok");
+      } catch {
+        setSyncStatus("error");
+      }
+      setSyncing(false);
+      setLoaded(true);
+    })();
   }, []);
 
-  // ── GCAL TOKEN ──
+  // ── GOOGLE AUTH ──
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     const token = params.get("access_token");
-    if (token) {
-      setGcalToken(token); setGcalConnected(true);
-      localStorage.setItem("gcal_token", token);
-      window.history.replaceState({}, document.title, window.location.pathname);
-      showToast("Google Calendar conectado ✓");
-    } else {
-      const saved = localStorage.getItem("gcal_token");
-      if (saved) { setGcalToken(saved); setGcalConnected(true); }
-      const savedDrive = localStorage.getItem("drive_token");
-      if (savedDrive) { setDriveToken(savedDrive); setDriveConnected(true); }
-      // Check if returning from Drive OAuth
-      const driveTokenParam = params.get("drive_token");
-      if (driveTokenParam) {
-        setDriveToken(driveTokenParam); setDriveConnected(true);
-        localStorage.setItem("drive_token", driveTokenParam);
-        window.history.replaceState({}, document.title, window.location.pathname);
-        showToast("Google Drive conectado ✓");
-      }
-    }
+    const driveTokenParam = params.get("drive_token");
+    if (token) { setGcalToken(token); setGcalConnected(true); localStorage.setItem("gcal_token", token); showToast("Google Calendar conectado ✓"); }
+    else { const s = localStorage.getItem("gcal_token"); if (s) { setGcalToken(s); setGcalConnected(true); } }
+    if (driveTokenParam) { setDriveToken(driveTokenParam); setDriveConnected(true); localStorage.setItem("drive_token", driveTokenParam); showToast("Google Drive conectado ✓"); }
+    else { const s = localStorage.getItem("drive_token"); if (s) { setDriveToken(s); setDriveConnected(true); } }
+    if (token || driveTokenParam) window.history.replaceState({}, document.title, window.location.pathname);
   }, []);
-
-  useEffect(() => { if (loaded) { setSaving(true); store.set("wos_tasks", tasks); setTimeout(()=>setSaving(false), 700); }}, [tasks, loaded]);
-  useEffect(() => { if (loaded) store.set("wos_settings", settings); }, [settings, loaded]);
 
   const showToast = (msg, type="success") => { setToast({ msg, type }); setTimeout(()=>setToast(null), 3500); };
 
-  // ── VOICE (100% LOCAL — NO API) ──
+  // ── SAVE SETTINGS ──
+  const saveSettings = async (newSettings) => {
+    setSettings(newSettings);
+    await sb.from('settings').upsert({ id:1, data:newSettings });
+  };
+
+  // ── VOICE ──
   const startVoice = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { showToast("Tu navegador no soporta voz. Usá Chrome.","error"); return; }
     if (listening) { recRef.current?.stop(); return; }
     const rec = new SR();
-    rec.lang = "es-AR";
-    rec.continuous = false;
-    rec.interimResults = false; // only final result
-    rec.onstart = () => { setListening(true); setVoiceTranscript(""); setLastVoiceResult(""); };
+    rec.lang = "es-AR"; rec.continuous = false; rec.interimResults = false;
+    rec.onstart = () => { setListening(true); setVoiceTranscript(""); };
     rec.onresult = (e) => {
       const transcript = e.results[0][0].transcript;
       setVoiceTranscript(transcript);
-      // Process command immediately on final result
-      const result = parseCommand(transcript, tasks, settings);
-      handleVoiceResult(result, transcript);
+      const result = parseCommand(transcript, settings);
+      handleVoiceResult(result);
     };
-    rec.onerror = (e) => { setListening(false); showToast("Error al escuchar: " + e.error, "error"); };
-    rec.onend = () => { setListening(false); };
+    rec.onerror = () => { setListening(false); showToast("Error al escuchar","error"); };
+    rec.onend = () => setListening(false);
     recRef.current = rec;
     rec.start();
   };
 
-  const handleVoiceResult = (result, transcript) => {
-    setLastVoiceResult(transcript);
+  const handleVoiceResult = async (result) => {
     switch(result.type) {
-      case "navigate":
-        setView(result.view);
-        showToast("📍 " + result.view);
-        break;
-      case "clear_filters":
-        setFilters({ area:"", priority:"", state:"", assignee:"", project:"", search:"" });
-        showToast("✓ Filtros limpiados");
-        break;
-      case "filter_project":
-        setFilters(f=>({...f, project:result.project}));
-        setView("tasks");
-        showToast("🔍 Mostrando: " + result.project);
-        break;
+      case "navigate": setView(result.view); showToast("📍 " + result.view); break;
+      case "clear_filters": setFilters({ area:"", priority:"", state:"", assignee:"", project:"", search:"" }); showToast("✓ Filtros limpiados"); break;
+      case "filter_project": setFilters(f=>({...f,project:result.project})); setView("tasks"); showToast("🔍 " + result.project); break;
+      case "quick_note": await addQuickNote(result.text); showToast("📝 Nota guardada"); break;
       case "update_state": {
-        const task = tasks.find(t => t.id === result.taskId);
-        if (task) {
-          setTasks(prev => prev.map(t => t.id===result.taskId ? {...t, state:result.state} : t));
-          showToast("✓ Tarea " + result.taskId + ": " + result.state);
-        } else {
-          showToast("No encontré la tarea " + result.taskId, "error");
-        }
+        const task = tasks.find(t => String(t.id).startsWith(result.taskId) || t.id === result.taskId);
+        if (task) { await updateTask(task.id, {state:result.state}); showToast("✓ " + result.state); }
+        else showToast("No encontré la tarea","error");
         break;
       }
       case "add_note": {
-        const task = tasks.find(t => t.id === result.taskId);
+        const task = tasks.find(t => String(t.id).startsWith(result.taskId) || t.id === result.taskId);
         if (task) {
           const note = { id:uid(), date:nowStr(), author:"Yo", text:result.note };
-          setTasks(prev => prev.map(t => t.id===result.taskId ? {...t, notes:[...(t.notes||[]), note]} : t));
-          showToast("✓ Nota agregada a tarea " + result.taskId);
-        } else {
-          showToast("No encontré la tarea " + result.taskId, "error");
-        }
+          const updatedNotes = [...(task.notes||[]), note];
+          await updateTask(task.id, {notes:updatedNotes});
+          showToast("✓ Nota agregada");
+        } else showToast("No encontré la tarea","error");
         break;
       }
       case "create_task": {
-        const newT = { id:uid(), title:result.title, area:result.area||"", project:result.project||"", priority:result.priority||"Media", state:"Pendiente", assignee:"Yo", deadline:"", description:"", notes:[], created:nowStr() };
-        setTasks(prev => [newT, ...prev]);
+        const t = { id:uid(), title:result.title, area:result.area||"", project:result.project||"", priority:result.priority||"Media", state:"Pendiente", assignee:"Yo", deadline:"", description:"", notes:[], created:nowStr() };
+        await addTask(t);
         setView("tasks");
         showToast("✓ Tarea creada: " + result.title);
         break;
       }
-      case "error":
-      case "unknown":
-        showToast(result.msg, "error");
-        break;
+      case "error": case "unknown": showToast(result.msg,"error"); break;
     }
   };
 
@@ -271,65 +246,7 @@ export default function WorkOS() {
     const scope = encodeURIComponent("https://www.googleapis.com/auth/calendar");
     window.location.href = "https://accounts.google.com/o/oauth2/v2/auth?client_id=" + clientId + "&redirect_uri=" + redirectUri + "&response_type=code&scope=" + scope + "&access_type=offline&prompt=consent";
   };
-
-  const disconnectGcal = () => {
-    localStorage.removeItem("gcal_token");
-    setGcalToken(null); setGcalConnected(false); setGcalEvents([]);
-    showToast("Google Calendar desconectado");
-  };
-
-  const connectDrive = () => {
-    const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-    const redirectUri = encodeURIComponent(appUrl + "/api/auth/drive-callback");
-    const scope = encodeURIComponent("https://www.googleapis.com/auth/drive.file");
-    window.location.href = "https://accounts.google.com/o/oauth2/v2/auth?client_id=" + clientId + "&redirect_uri=" + redirectUri + "&response_type=code&scope=" + scope + "&access_type=offline&prompt=consent";
-  };
-
-  const disconnectDrive = () => {
-    localStorage.removeItem("drive_token");
-    setDriveToken(null); setDriveConnected(false);
-    showToast("Google Drive desconectado");
-  };
-
-  const uploadToDrive = async (file, taskId, noteText) => {
-    if (!driveToken) { showToast("Conectá Google Drive primero", "error"); return; }
-    setUploadingFile(true);
-    try {
-      const metadata = { name: file.name, mimeType: file.type };
-      const form = new FormData();
-      form.append("metadata", new Blob([JSON.stringify(metadata)], { type:"application/json" }));
-      form.append("file", file);
-      const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink", {
-        method:"POST",
-        headers:{ Authorization:"Bearer " + driveToken },
-        body: form
-      });
-      const data = await res.json();
-      if (data.id) {
-        // Make file readable by anyone with link
-        await fetch("https://www.googleapis.com/drive/v3/files/" + data.id + "/permissions", {
-          method:"POST",
-          headers:{ Authorization:"Bearer " + driveToken, "Content-Type":"application/json" },
-          body: JSON.stringify({ role:"reader", type:"anyone" })
-        });
-        const note = {
-          id: uid(), date: nowStr(), author:"Yo",
-          text: noteText || ("📎 Archivo adjunto: " + file.name),
-          attachment: { name: file.name, url: data.webViewLink, type: file.type, driveId: data.id }
-        };
-        setTasks(prev => prev.map(t => t.id===taskId ? {...t, notes:[...(t.notes||[]), note]} : t));
-        setSelectedTask(prev => prev ? {...prev, notes:[...(prev.notes||[]), note]} : prev);
-        showToast("Archivo subido a Drive ✓");
-      } else if (data.error?.code === 401) {
-        setDriveConnected(false); localStorage.removeItem("drive_token");
-        showToast("Sesión de Drive expirada. Reconectá.", "error");
-      } else {
-        showToast("Error al subir archivo", "error");
-      }
-    } catch { showToast("Error al subir archivo", "error"); }
-    setUploadingFile(false);
-  };
+  const disconnectGcal = () => { localStorage.removeItem("gcal_token"); setGcalToken(null); setGcalConnected(false); setGcalEvents([]); showToast("Google Calendar desconectado"); };
 
   const loadGcalEvents = useCallback(async () => {
     if (!gcalToken) return;
@@ -337,13 +254,9 @@ export default function WorkOS() {
     try {
       const res = await fetch("/api/calendar?token=" + gcalToken);
       const data = await res.json();
-      if (data.items) {
-        setGcalEvents(data.items.map(e => ({ id:e.id, title:e.summary||"Sin título", start:e.start, end:e.end, location:e.location||"", description:e.description||"" })));
-      } else if (data.error?.code === 401) {
-        setGcalConnected(false); localStorage.removeItem("gcal_token");
-        showToast("Sesión expirada. Reconectá Google Calendar.", "error");
-      }
-    } catch(e) { showToast("Error cargando eventos","error"); }
+      if (data.items) setGcalEvents(data.items.map(e=>({ id:e.id, title:e.summary||"Sin título", start:e.start, end:e.end, location:e.location||"", description:e.description||"" })));
+      else if (data.error?.code===401) { setGcalConnected(false); localStorage.removeItem("gcal_token"); showToast("Sesión expirada. Reconectá Google Calendar.","error"); }
+    } catch {}
     setGcalLoading(false);
   }, [gcalToken]);
 
@@ -354,19 +267,115 @@ export default function WorkOS() {
     try {
       const startDT = newEvent.time ? newEvent.date+"T"+newEvent.time+":00" : newEvent.date;
       const endDT = newEvent.time ? new Date(new Date(startDT).getTime()+newEvent.duration*60000).toISOString() : newEvent.date;
-      const event = {
-        summary: newEvent.title, description: newEvent.desc||"",
-        start: newEvent.time ? { dateTime:startDT, timeZone:"America/Argentina/Buenos_Aires" } : { date:newEvent.date },
-        end: newEvent.time ? { dateTime:endDT, timeZone:"America/Argentina/Buenos_Aires" } : { date:newEvent.date },
-      };
-      const res = await fetch("/api/calendar", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ token:gcalToken, event }) });
+      const event = { summary:newEvent.title, description:newEvent.desc||"", start:newEvent.time?{dateTime:startDT,timeZone:"America/Argentina/Buenos_Aires"}:{date:newEvent.date}, end:newEvent.time?{dateTime:endDT,timeZone:"America/Argentina/Buenos_Aires"}:{date:newEvent.date} };
+      const res = await fetch("/api/calendar", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({token:gcalToken,event}) });
       const data = await res.json();
-      if (data.id) { showToast("Evento creado ✓"); setShowNewEvent(false); setNewEvent({ title:"", date:"", time:"", duration:60, desc:"" }); setTimeout(loadGcalEvents, 1000); }
+      if (data.id) { showToast("Evento creado ✓"); setShowNewEvent(false); setNewEvent({title:"",date:"",time:"",duration:60,desc:""}); setTimeout(loadGcalEvents,1000); }
       else showToast("Error al crear evento","error");
     } catch { showToast("Error al crear evento","error"); }
   };
 
-  // ── TASKS ──
+  // ── DRIVE ──
+  const connectDrive = () => {
+    const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+    const redirectUri = encodeURIComponent(appUrl + "/api/auth/drive-callback");
+    const scope = encodeURIComponent("https://www.googleapis.com/auth/drive.file");
+    window.location.href = "https://accounts.google.com/o/oauth2/v2/auth?client_id=" + clientId + "&redirect_uri=" + redirectUri + "&response_type=code&scope=" + scope + "&access_type=offline&prompt=consent";
+  };
+  const disconnectDrive = () => { localStorage.removeItem("drive_token"); setDriveToken(null); setDriveConnected(false); showToast("Google Drive desconectado"); };
+
+  const uploadToDrive = async (file, taskId) => {
+    if (!driveToken) { showToast("Conectá Google Drive primero","error"); return; }
+    setUploadingFile(true);
+    try {
+      const metadata = { name:file.name, mimeType:file.type };
+      const form = new FormData();
+      form.append("metadata", new Blob([JSON.stringify(metadata)],{type:"application/json"}));
+      form.append("file", file);
+      const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink", { method:"POST", headers:{Authorization:"Bearer "+driveToken}, body:form });
+      const data = await res.json();
+      if (data.id) {
+        await fetch("https://www.googleapis.com/drive/v3/files/"+data.id+"/permissions", { method:"POST", headers:{Authorization:"Bearer "+driveToken,"Content-Type":"application/json"}, body:JSON.stringify({role:"reader",type:"anyone"}) });
+        const note = { id:uid(), date:nowStr(), author:"Yo", text:"📎 Archivo adjunto: "+file.name, attachment:{name:file.name,url:data.webViewLink,type:file.type} };
+        const task = tasks.find(t=>t.id===taskId);
+        const updatedNotes = [...(task?.notes||[]), note];
+        await updateTask(taskId, {notes:updatedNotes});
+        showToast("Archivo subido a Drive ✓");
+      } else { showToast("Error al subir archivo","error"); }
+    } catch { showToast("Error al subir archivo","error"); }
+    setUploadingFile(false);
+  };
+
+  // ── TASKS (SUPABASE) ──
+  const addTask = async (taskData) => {
+    const t = taskData || { ...newTask, id:uid(), notes:[], created:nowStr() };
+    setTasks(prev => [t, ...prev]);
+    await sb.from('tasks').upsert(t);
+    if (!taskData) { setNewTask({title:"",area:"",priority:"Media",state:"Pendiente",assignee:"Yo",deadline:"",description:"",project:""}); setShowTaskForm(false); showToast("Tarea creada ✓"); }
+  };
+
+  const updateTask = async (id, updates) => {
+    setTasks(prev => prev.map(t => t.id===id ? {...t,...updates} : t));
+    setSelectedTask(prev => prev?.id===id ? {...prev,...updates} : prev);
+    await sb.from('tasks').update(id, updates);
+  };
+
+  const addNote = async (taskId) => {
+    if (!noteInput.trim()) return;
+    const note = { id:uid(), date:nowStr(), author:"Yo", text:noteInput.trim() };
+    const task = tasks.find(t=>t.id===taskId);
+    const updatedNotes = [...(task?.notes||[]), note];
+    await updateTask(taskId, {notes:updatedNotes});
+    setSelectedTask(prev => prev ? {...prev, notes:updatedNotes} : prev);
+    setNoteInput(""); showToast("Nota agregada ✓");
+  };
+
+  const deleteTask = async (id) => { setTasks(prev=>prev.filter(t=>t.id!==id)); setSelectedTask(null); await sb.from('tasks').delete(id); showToast("Tarea eliminada"); };
+
+  const openEdit = (task) => { setEditTask({...task}); setEditMode(true); };
+  const saveEdit = async () => {
+    if (!editTask.title.trim()) return;
+    await updateTask(editTask.id, editTask);
+    setEditMode(false); setEditTask(null); showToast("Tarea actualizada ✓");
+  };
+
+  // ── QUICK NOTES (SUPABASE) ──
+  const addQuickNote = async (text) => {
+    if (!text?.trim()) return;
+    const note = { id:uid(), text:text.trim(), done:false, created_at:new Date().toISOString() };
+    setQuickNotes(prev => [note, ...prev]);
+    await sb.from('quick_notes').upsert(note);
+    setNewQuickNote("");
+  };
+
+  const toggleQuickNote = async (id) => {
+    const note = quickNotes.find(n=>n.id===id);
+    const updated = {...note, done:!note.done};
+    setQuickNotes(prev => prev.map(n => n.id===id ? updated : n));
+    await sb.from('quick_notes').update(id, {done:!note.done});
+  };
+
+  const deleteQuickNote = async (id) => {
+    setQuickNotes(prev => prev.filter(n=>n.id!==id));
+    await sb.from('quick_notes').delete(id);
+  };
+
+  const convertToTask = async (note) => {
+    const t = { id:uid(), title:note.text, area:"", project:"", priority:"Media", state:"Pendiente", assignee:"Yo", deadline:"", description:"", notes:[], created:nowStr() };
+    await addTask(t);
+    await deleteQuickNote(note.id);
+    setView("tasks");
+    showToast("✓ Nota convertida a tarea");
+  };
+
+  const clearDoneNotes = async () => {
+    const doneIds = quickNotes.filter(n=>n.done).map(n=>n.id);
+    setQuickNotes(prev => prev.filter(n=>!n.done));
+    for (const id of doneIds) await sb.from('quick_notes').delete(id);
+    showToast("Notas procesadas eliminadas ✓");
+  };
+
   const filteredTasks = tasks.filter(t => {
     if (filters.area && t.area!==filters.area) return false;
     if (filters.priority && t.priority!==filters.priority) return false;
@@ -377,54 +386,16 @@ export default function WorkOS() {
     return true;
   });
 
-  const addTask = () => {
-    if (!newTask.title) return;
-    setTasks([{ ...newTask, id:uid(), notes:[], created:nowStr() }, ...tasks]);
-    setNewTask({ title:"", area:"", priority:"Media", state:"Pendiente", assignee:"Yo", deadline:"", description:"", project:"" });
-    setShowTaskForm(false); showToast("Tarea creada ✓");
-  };
-
-  const updateTask = (id, updates) => {
-    setTasks(prev => prev.map(t => t.id===id ? {...t,...updates} : t));
-    setSelectedTask(prev => prev?.id===id ? {...prev,...updates} : prev);
-  };
-
-  const addNote = (taskId) => {
-    if (!noteInput.trim()) return;
-    const note = { id:uid(), date:nowStr(), author:"Yo", text:noteInput.trim() };
-    setTasks(prev => prev.map(t => t.id===taskId ? {...t, notes:[...(t.notes||[]), note]} : t));
-    setSelectedTask(prev => prev ? {...prev, notes:[...(prev.notes||[]), note]} : prev);
-    setNoteInput(""); showToast("Nota agregada ✓");
-  };
-
-  const deleteTask = (id) => { setTasks(prev=>prev.filter(t=>t.id!==id)); setSelectedTask(null); showToast("Tarea eliminada"); };
-  const openEdit = (task) => {
-    setEditTask({ ...task });
-    setEditMode(true);
-  };
-
-  const saveEdit = () => {
-    if (!editTask.title.trim()) return;
-    updateTask(editTask.id, editTask);
-    setEditMode(false);
-    setEditTask(null);
-    showToast("Tarea actualizada ✓");
-  };
-
-  const clearFilters = () => setFilters({ area:"", priority:"", state:"", assignee:"", project:"", search:"" });
+  const clearFilters = () => setFilters({area:"",priority:"",state:"",assignee:"",project:"",search:""});
   const activeFilters = Object.values(filters).filter(Boolean).length;
-
-  const addSettingItem = (key) => {
-    if (!newSettingItem.trim()) return;
-    setSettings(s=>({...s,[key]:[...s[key],newSettingItem.trim()]}));
-    setNewSettingItem("");
-  };
-  const removeSettingItem = (key,i) => setSettings(s=>({...s,[key]:s[key].filter((_,idx)=>idx!==i)}));
+  const addSettingItem = async (key) => { if (!newSettingItem.trim()) return; const ns = {...settings,[key]:[...settings[key],newSettingItem.trim()]}; await saveSettings(ns); setNewSettingItem(""); };
+  const removeSettingItem = async (key,i) => { const ns = {...settings,[key]:settings[key].filter((_,idx)=>idx!==i)}; await saveSettings(ns); };
 
   const urgentCount = tasks.filter(t=>t.priority==="Urgente"&&t.state!=="Completado").length;
   const inProgressCount = tasks.filter(t=>t.state==="En progreso").length;
   const completedCount = tasks.filter(t=>t.state==="Completado").length;
   const blockedCount = tasks.filter(t=>t.state==="Bloqueado").length;
+  const pendingNotesCount = quickNotes.filter(n=>!n.done).length;
 
   // ── THEME ──
   const c = {
@@ -433,6 +404,7 @@ export default function WorkOS() {
     text: dark?"#f1f5f9":"#0f1c14", text2: dark?"#94a3b8":"#4b6357",
     accent:"#1a6b3c", accentLight: dark?"#166534":"#dcfce7",
     gold:"#b8862a", header: dark?"#0f172a":"#0f1c14",
+    amber:"#d97706", amberLight:"#fef3c7",
   };
 
   const S = {
@@ -441,7 +413,7 @@ export default function WorkOS() {
     logo: { color:"#4ade80", fontWeight:800, fontSize:18 },
     logoSub: { color:"#4b6357", fontSize:9, letterSpacing:2, textTransform:"uppercase" },
     nav: { display:"flex", gap:2 },
-    navBtn: (a) => ({ background:a?"rgba(74,222,128,0.15)":"transparent", color:a?"#4ade80":"#64748b", border:"none", padding:"7px 11px", borderRadius:6, cursor:"pointer", fontSize:11, fontWeight:700 }),
+    navBtn: (a) => ({ background:a?"rgba(74,222,128,0.15)":"transparent", color:a?"#4ade80":"#64748b", border:"none", padding:"7px 10px", borderRadius:6, cursor:"pointer", fontSize:11, fontWeight:700 }),
     main: { maxWidth:1100, margin:"0 auto", padding:"16px 12px 100px" },
     card: { background:c.surface, borderRadius:12, padding:16, border:"1px solid "+c.border, marginBottom:12 },
     sTitle: { fontSize:11, fontWeight:700, color:c.text2, letterSpacing:1.5, textTransform:"uppercase", marginBottom:12, paddingBottom:8, borderBottom:"1px solid "+c.border },
@@ -449,7 +421,7 @@ export default function WorkOS() {
     priBadge: (p) => ({ width:8, height:8, borderRadius:"50%", background:PRIORITY_COLORS[p]||"#9ca3af", display:"inline-block", marginRight:5, flexShrink:0 }),
     areaBadge: (a) => ({ background:AREA_BG[a]||"#f3f4f6", color:"#374151", borderRadius:4, padding:"2px 7px", fontSize:10, fontWeight:600, display:"inline-block" }),
     projBadge: { background:"#e0f2fe", color:"#0369a1", borderRadius:4, padding:"2px 7px", fontSize:10, fontWeight:700, display:"inline-block" },
-    btn: (v) => ({ background:v==="primary"?c.accent:v==="gold"?c.gold:v==="danger"?"#dc2626":v==="green"?"#16a34a":c.surface2, color:["primary","gold","danger","green"].includes(v)?"#fff":c.text, border:"none", borderRadius:8, padding:"8px 16px", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit" }),
+    btn: (v) => ({ background:v==="primary"?c.accent:v==="gold"?c.gold:v==="danger"?"#dc2626":v==="green"?"#16a34a":v==="amber"?c.amber:c.surface2, color:["primary","gold","danger","green","amber"].includes(v)?"#fff":c.text, border:"none", borderRadius:8, padding:"8px 16px", cursor:"pointer", fontSize:12, fontWeight:700, fontFamily:"inherit" }),
     input: { width:"100%", background:c.surface2, border:"1px solid "+c.border, borderRadius:8, padding:"9px 12px", fontSize:13, fontFamily:"inherit", color:c.text, outline:"none", boxSizing:"border-box" },
     select: { width:"100%", background:c.surface2, border:"1px solid "+c.border, borderRadius:8, padding:"9px 12px", fontSize:13, fontFamily:"inherit", color:c.text, boxSizing:"border-box" },
     label: { fontSize:10, fontWeight:700, color:c.text2, display:"block", marginBottom:4, letterSpacing:1, textTransform:"uppercase" },
@@ -465,7 +437,11 @@ export default function WorkOS() {
 
   if (!loaded) return (
     <div style={{...S.app,display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}>
-      <div style={{textAlign:"center"}}><div style={{fontSize:40,marginBottom:8}}>🏗</div><div style={{color:"#4ade80",fontWeight:800,fontSize:20}}>WorkOS</div><div style={{color:"#64748b",fontSize:12,marginTop:4}}>Cargando...</div></div>
+      <div style={{textAlign:"center"}}>
+        <div style={{fontSize:40,marginBottom:8}}>🏗</div>
+        <div style={{color:"#4ade80",fontWeight:800,fontSize:20}}>WorkOS</div>
+        <div style={{color:"#64748b",fontSize:12,marginTop:4}}>Sincronizando datos...</div>
+      </div>
     </div>
   );
 
@@ -475,13 +451,17 @@ export default function WorkOS() {
       <div style={S.header}>
         <div><div style={S.logo}>⬡ {APP_NAME}</div><div style={S.logoSub}>{APP_SUBTITLE}</div></div>
         <nav style={S.nav}>
-          {[["dashboard","Dashboard"],["tasks","Tareas"],["agenda","Agenda"],["settings","Ajustes"]].map(([v,l])=>(
-            <button key={v} style={S.navBtn(view===v)} onClick={()=>setView(v)}>{l}</button>
+          {[["dashboard","Dashboard"],["tasks","Tareas"],["notes","Notas"],["agenda","Agenda"],["settings","Ajustes"]].map(([v,l])=>(
+            <button key={v} style={S.navBtn(view===v)} onClick={()=>setView(v)}>
+              {l}{v==="notes"&&pendingNotesCount>0&&<span style={{background:"#dc2626",color:"#fff",borderRadius:10,padding:"1px 5px",fontSize:9,marginLeft:4}}>{pendingNotesCount}</span>}
+            </button>
           ))}
         </nav>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <span style={{fontSize:10,color:saving?"#ca8a04":"#4ade80"}}>{saving?"● Guardando":"● Guardado"}</span>
-          <button onClick={()=>setSettings(s=>({...s,darkMode:!s.darkMode}))} style={{background:"transparent",border:"none",cursor:"pointer",fontSize:16}}>{dark?"☀️":"🌙"}</button>
+          <span style={{fontSize:10,color:syncStatus==="error"?"#dc2626":syncStatus==="ok"?"#4ade80":"#ca8a04"}}>
+            {syncStatus==="error"?"● Error sync":syncStatus==="ok"?"● Sincronizado":"● Sincronizando"}
+          </span>
+          <button onClick={()=>saveSettings({...settings,darkMode:!settings.darkMode})} style={{background:"transparent",border:"none",cursor:"pointer",fontSize:16}}>{dark?"☀️":"🌙"}</button>
         </div>
       </div>
 
@@ -491,10 +471,10 @@ export default function WorkOS() {
         {view==="dashboard" && (<>
           <div style={{marginBottom:16}}>
             <h2 style={{fontSize:20,fontWeight:800,marginBottom:2}}>Buenos días 👋</h2>
-            <p style={{color:c.text2,fontSize:13}}>Resumen de tu trabajo</p>
+            <p style={{color:c.text2,fontSize:13}}>Resumen de tu trabajo · Datos sincronizados en la nube ☁️</p>
           </div>
           <div style={S.statsRow}>
-            {[{label:"Urgentes",val:urgentCount,col:"#dc2626"},{label:"En progreso",val:inProgressCount,col:"#3b82f6"},{label:"Bloqueados",val:blockedCount,col:"#f59e0b"},{label:"Completados",val:completedCount,col:"#16a34a"}].map(s=>(
+            {[{label:"Urgentes",val:urgentCount,col:"#dc2626"},{label:"En progreso",val:inProgressCount,col:"#3b82f6"},{label:"Bloqueados",val:blockedCount,col:"#f59e0b"},{label:"Completados",val:completedCount,col:"#16a34a"},{label:"Notas pendientes",val:pendingNotesCount,col:"#d97706"}].map(s=>(
               <div key={s.label} style={S.statCard(s.col)}>
                 <div style={{fontSize:28,fontWeight:900,color:s.col,lineHeight:1}}>{s.val}</div>
                 <div style={{fontSize:10,color:c.text2,marginTop:3}}>{s.label}</div>
@@ -519,6 +499,20 @@ export default function WorkOS() {
             ))}
             {tasks.filter(t=>["Urgente","Alta"].includes(t.priority)&&t.state!=="Completado").length===0&&<p style={{color:c.text2,fontSize:13}}>✅ Sin urgentes pendientes</p>}
           </div>
+
+          {/* Notas pendientes en dashboard */}
+          {pendingNotesCount>0&&(
+            <div style={{...S.card,borderLeft:"3px solid "+c.amber}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <div style={S.sTitle}>📝 Notas sin procesar ({pendingNotesCount})</div>
+                <button style={{...S.btn("amber"),fontSize:11,padding:"5px 10px"}} onClick={()=>setView("notes")}>Ver todas</button>
+              </div>
+              {quickNotes.filter(n=>!n.done).slice(0,3).map(n=>(
+                <div key={n.id} style={{fontSize:13,padding:"6px 0",borderBottom:"1px solid "+c.border,color:c.text}}>{n.text}</div>
+              ))}
+            </div>
+          )}
+
           <div style={S.card}>
             <div style={S.sTitle}>🏗 Por proyecto</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
@@ -532,26 +526,80 @@ export default function WorkOS() {
             </div>
           </div>
           <div style={S.card}>
-            <div style={S.sTitle}>📊 Por área</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
-              {settings.areas.map(area=>{
-                const count=tasks.filter(t=>t.area===area&&t.state!=="Completado").length;
-                if(!count) return null;
-                return (<div key={area} onClick={()=>{setFilters(f=>({...f,area}));setView("tasks");}} style={{background:AREA_BG[area]||"#f3f4f6",border:"1px solid "+c.border,borderRadius:10,padding:"10px 14px",textAlign:"center",cursor:"pointer",minWidth:90}}>
-                  <div style={{fontSize:22,fontWeight:900,color:c.text}}>{count}</div>
-                  <div style={{fontSize:10,color:c.text2,marginTop:2}}>{area}</div>
-                </div>);
-              })}
-            </div>
-          </div>
-          <div style={S.card}>
             <div style={S.sTitle}>⚡ Acceso rápido</div>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
               <button style={S.btn("primary")} onClick={()=>{setView("tasks");setShowTaskForm(true);}}>+ Nueva tarea</button>
+              <button style={S.btn("amber")} onClick={()=>setView("notes")}>📝 Bloc de notas</button>
               <button style={S.btn("gold")} onClick={()=>setView("agenda")}>📅 Agenda</button>
-              <button style={S.btn("green")} onClick={startVoice}>🎙 Comando de voz</button>
+              <button style={S.btn("green")} onClick={startVoice}>🎙 Voz</button>
             </div>
           </div>
+        </>)}
+
+        {/* ── QUICK NOTES (BLOC DE NOTAS) ── */}
+        {view==="notes" && (<>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <div>
+              <h2 style={{fontSize:18,fontWeight:800,marginBottom:2}}>📝 Bloc de Notas</h2>
+              <p style={{color:c.text2,fontSize:12}}>Anotá rápido en reuniones u obras. Procesalas después desde la oficina.</p>
+            </div>
+            {quickNotes.filter(n=>n.done).length>0&&(
+              <button style={{...S.btn("danger"),fontSize:11}} onClick={clearDoneNotes}>🗑 Limpiar procesadas</button>
+            )}
+          </div>
+
+          {/* Input rápido */}
+          <div style={{...S.card,border:"2px solid "+c.amber,marginBottom:16}}>
+            <div style={{display:"flex",gap:8}}>
+              <textarea style={{...S.input,flex:1,resize:"none",minHeight:70}} value={newQuickNote} onChange={e=>setNewQuickNote(e.target.value)}
+                placeholder="Anotá algo rápido... (Enter para guardar)"
+                onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();addQuickNote(newQuickNote);}}}
+              />
+              <button style={{...S.btn("amber"),alignSelf:"flex-end",padding:"10px 16px"}} onClick={()=>addQuickNote(newQuickNote)}>
+                Guardar
+              </button>
+            </div>
+            <div style={{fontSize:11,color:c.text2,marginTop:6}}>💡 También podés decir "anotar [texto]" con el micrófono 🎙</div>
+          </div>
+
+          {quickNotes.length===0&&<div style={{...S.card,textAlign:"center",color:c.text2,padding:32}}>Sin notas aún. ¡Anotá algo!</div>}
+
+          {/* Notas pendientes */}
+          {quickNotes.filter(n=>!n.done).length>0&&(
+            <div style={{marginBottom:20}}>
+              <div style={{fontSize:11,fontWeight:700,color:c.text2,letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>Pendientes de procesar ({quickNotes.filter(n=>!n.done).length})</div>
+              {quickNotes.filter(n=>!n.done).map(n=>(
+                <div key={n.id} style={{...S.card,borderLeft:"3px solid "+c.amber,padding:"12px 16px"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13,color:c.text,lineHeight:1.5,marginBottom:4}}>{n.text}</div>
+                      <div style={{fontSize:10,color:c.text2}}>{fmtDateTime(n.created_at)}</div>
+                    </div>
+                    <div style={{display:"flex",gap:6,flexShrink:0}}>
+                      <button onClick={()=>convertToTask(n)} style={{...S.btn("primary"),fontSize:10,padding:"5px 10px"}}>→ Tarea</button>
+                      <button onClick={()=>toggleQuickNote(n.id)} style={{...S.btn("green"),fontSize:10,padding:"5px 10px"}}>✓</button>
+                      <button onClick={()=>deleteQuickNote(n.id)} style={{...S.btn("danger"),fontSize:10,padding:"5px 8px"}}>✕</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Notas procesadas */}
+          {quickNotes.filter(n=>n.done).length>0&&(
+            <div>
+              <div style={{fontSize:11,fontWeight:700,color:c.text2,letterSpacing:1,textTransform:"uppercase",marginBottom:10}}>Procesadas ✓ ({quickNotes.filter(n=>n.done).length})</div>
+              {quickNotes.filter(n=>n.done).map(n=>(
+                <div key={n.id} style={{...S.card,padding:"10px 16px",opacity:0.5}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div style={{fontSize:13,textDecoration:"line-through",color:c.text2}}>{n.text}</div>
+                    <button onClick={()=>deleteQuickNote(n.id)} style={{background:"transparent",border:"none",color:c.text2,cursor:"pointer",fontSize:16}}>×</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </>)}
 
         {/* ── TASKS ── */}
@@ -576,7 +624,8 @@ export default function WorkOS() {
             </div>
           </div>
           <div style={{fontSize:11,color:c.text2,marginBottom:10}}>{filteredTasks.length} tarea{filteredTasks.length!==1?"s":""}</div>
-          {showTaskForm && (
+
+          {showTaskForm&&(
             <div style={{...S.card,border:"2px solid "+c.accent,marginBottom:14}}>
               <div style={S.sTitle}>Nueva tarea</div>
               <div style={{marginBottom:10}}><label style={S.label}>Título *</label><input style={S.input} value={newTask.title} onChange={e=>setNewTask(t=>({...t,title:e.target.value}))} placeholder="¿Qué hay que hacer?"/></div>
@@ -590,11 +639,12 @@ export default function WorkOS() {
               </div>
               <div style={{marginBottom:12}}><label style={S.label}>Descripción</label><textarea style={{...S.input,resize:"vertical",minHeight:60}} value={newTask.description} onChange={e=>setNewTask(t=>({...t,description:e.target.value}))} placeholder="Detalles..."/></div>
               <div style={{display:"flex",gap:8}}>
-                <button style={S.btn("primary")} onClick={addTask}>Guardar</button>
+                <button style={S.btn("primary")} onClick={()=>addTask()}>Guardar</button>
                 <button style={S.btn(null)} onClick={()=>setShowTaskForm(false)}>Cancelar</button>
               </div>
             </div>
           )}
+
           {filteredTasks.length===0&&<div style={{...S.card,textAlign:"center",color:c.text2,padding:32}}>Sin tareas con estos filtros</div>}
           {filteredTasks.map(t=>(
             <div key={t.id} style={{...S.card,borderLeft:"3px solid "+(PRIORITY_COLORS[t.priority]||"#ccc"),cursor:"pointer"}} onClick={()=>setSelectedTask(t)}>
@@ -625,14 +675,14 @@ export default function WorkOS() {
               {gcalConnected&&<button style={S.btn("primary")} onClick={()=>setShowNewEvent(true)}>+ Evento</button>}
             </div>
           </div>
-          {!gcalConnected ? (
+          {!gcalConnected?(
             <div style={{...S.card,textAlign:"center",padding:32}}>
               <div style={{fontSize:40,marginBottom:12}}>📅</div>
               <div style={{fontWeight:700,fontSize:16,marginBottom:8}}>Conectar Google Calendar</div>
               <div style={{color:c.text2,fontSize:13,marginBottom:20}}>Vinculá tu cuenta para ver y crear eventos desde WorkOS.</div>
               <button style={{...S.btn("primary"),padding:"12px 28px",fontSize:14}} onClick={connectGcal}>Conectar con Google</button>
             </div>
-          ) : (<>
+          ):(<>
             <div style={{...S.card,background:c.accentLight,border:"1px solid "+c.accent,marginBottom:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
               <span style={{fontSize:13,color:c.accent,fontWeight:700}}>✅ Google Calendar conectado</span>
               <button style={{...S.btn("danger"),fontSize:11,padding:"5px 10px"}} onClick={disconnectGcal}>Desconectar</button>
@@ -670,7 +720,7 @@ export default function WorkOS() {
         </>)}
 
         {/* ── SETTINGS ── */}
-        {view==="settings" && (
+        {view==="settings"&&(
           <div style={{maxWidth:600,margin:"0 auto"}}>
             <h2 style={{fontSize:18,fontWeight:800,marginBottom:14}}>Ajustes</h2>
             <div style={{display:"flex",gap:6,marginBottom:16,overflowX:"auto"}}>
@@ -698,7 +748,12 @@ export default function WorkOS() {
                 <div style={S.sTitle}>Preferencias</div>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 0",borderBottom:"1px solid "+c.border}}>
                   <span style={{fontSize:13}}>Modo oscuro</span>
-                  <button onClick={()=>setSettings(s=>({...s,darkMode:!s.darkMode}))} style={{...S.btn(settings.darkMode?"primary":null),fontSize:12,padding:"6px 14px"}}>{settings.darkMode?"Activo":"Inactivo"}</button>
+                  <button onClick={()=>saveSettings({...settings,darkMode:!settings.darkMode})} style={{...S.btn(settings.darkMode?"primary":null),fontSize:12,padding:"6px 14px"}}>{settings.darkMode?"Activo":"Inactivo"}</button>
+                </div>
+                <div style={{padding:"12px 0",borderBottom:"1px solid "+c.border}}>
+                  <div style={{fontSize:13,fontWeight:700,marginBottom:4}}>☁️ Sincronización</div>
+                  <div style={{fontSize:12,color:c.text2,marginBottom:4}}>Datos sincronizados via Supabase — disponibles en todos tus dispositivos.</div>
+                  <div style={{fontSize:12,color:syncStatus==="ok"?"#16a34a":"#dc2626",fontWeight:700}}>{syncStatus==="ok"?"✅ Conectado y sincronizado":"❌ Error de conexión"}</div>
                 </div>
                 <div style={{padding:"12px 0",borderBottom:"1px solid "+c.border}}>
                   <div style={{fontSize:13,fontWeight:700,marginBottom:4}}>Google Calendar</div>
@@ -708,7 +763,7 @@ export default function WorkOS() {
                 </div>
                 <div style={{padding:"12px 0"}}>
                   <div style={{fontSize:13,fontWeight:700,marginBottom:4}}>Google Drive</div>
-                  <div style={{fontSize:12,color:c.text2,marginBottom:8}}>{driveConnected?"✅ Conectado — podés adjuntar archivos en las notas":"No conectado"}</div>
+                  <div style={{fontSize:12,color:c.text2,marginBottom:8}}>{driveConnected?"✅ Conectado — podés adjuntar archivos":"No conectado"}</div>
                   {!driveConnected&&<button style={S.btn("primary")} onClick={connectDrive}>Conectar Google Drive</button>}
                   {driveConnected&&<button style={S.btn("danger")} onClick={disconnectDrive}>Desconectar</button>}
                 </div>
@@ -723,20 +778,14 @@ export default function WorkOS() {
       {selectedTask&&(
         <div style={S.modal} onClick={()=>{setSelectedTask(null);setEditMode(false);setEditTask(null);}}>
           <div style={S.modalBox} onClick={e=>e.stopPropagation()}>
-
-            {/* HEADER */}
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
-              {!editMode
-                ? <h3 style={{fontSize:15,fontWeight:800,flex:1,paddingRight:12,lineHeight:1.3}}>{selectedTask.title}</h3>
-                : <span style={{fontSize:13,fontWeight:700,color:c.accent}}>✏️ Editando tarea</span>
-              }
+              {!editMode?<h3 style={{fontSize:15,fontWeight:800,flex:1,paddingRight:12,lineHeight:1.3}}>{selectedTask.title}</h3>:<span style={{fontSize:13,fontWeight:700,color:c.accent}}>✏️ Editando tarea</span>}
               <div style={{display:"flex",gap:6}}>
                 {!editMode&&<button onClick={()=>openEdit(selectedTask)} style={{...S.btn("gold"),padding:"6px 12px",fontSize:11}}>✏️ Editar</button>}
                 <button onClick={()=>{setSelectedTask(null);setEditMode(false);setEditTask(null);}} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:c.text2}}>✕</button>
               </div>
             </div>
 
-            {/* VIEW MODE */}
             {!editMode&&(<>
               <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:14}}>
                 {selectedTask.area&&<span style={S.areaBadge(selectedTask.area)}>{selectedTask.area}</span>}
@@ -773,8 +822,7 @@ export default function WorkOS() {
                       <div style={{fontSize:13,lineHeight:1.5}}>{n.text}</div>
                       {n.attachment&&(
                         <a href={n.attachment.url} target="_blank" rel="noreferrer" style={{display:"inline-flex",alignItems:"center",gap:5,marginTop:6,background:"#e0f2fe",color:"#0369a1",borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:700,textDecoration:"none"}}>
-                          {n.attachment.type?.includes("image")?"🖼":n.attachment.type?.includes("pdf")?"📄":n.attachment.type?.includes("sheet")||n.attachment.name?.includes(".xls")?"📊":n.attachment.type?.includes("word")||n.attachment.name?.includes(".doc")?"📝":"📎"}
-                          {" "}{n.attachment.name}
+                          {n.attachment.type?.includes("image")?"🖼":n.attachment.type?.includes("pdf")?"📄":"📎"} {n.attachment.name}
                         </a>
                       )}
                     </div>
@@ -785,19 +833,13 @@ export default function WorkOS() {
                   <button style={S.btn("primary")} onClick={()=>addNote(selectedTask.id)}>+</button>
                 </div>
                 <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                  {driveConnected ? (
-                    <>
-                      <label style={{...S.btn("gold"),padding:"7px 12px",cursor:"pointer",fontSize:11,display:"inline-block"}}>
-                        {uploadingFile?"⏳ Subiendo...":"📎 Adjuntar archivo"}
-                        <input type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" style={{display:"none"}} disabled={uploadingFile}
-                          onChange={e=>{const f=e.target.files[0]; if(f) uploadToDrive(f, selectedTask.id, ""); e.target.value="";}}/>
-                      </label>
-                      <span style={{fontSize:10,color:c.text2}}>Fotos, PDF, Word, Excel</span>
-                    </>
-                  ) : (
-                    <button onClick={connectDrive} style={{...S.btn(null),fontSize:11,padding:"7px 12px",border:"1px dashed "+c.border}}>
-                      🔗 Conectar Google Drive para adjuntar archivos
-                    </button>
+                  {driveConnected?(
+                    <label style={{...S.btn("gold"),padding:"7px 12px",cursor:"pointer",fontSize:11,display:"inline-block"}}>
+                      {uploadingFile?"⏳ Subiendo...":"📎 Adjuntar archivo"}
+                      <input type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" style={{display:"none"}} disabled={uploadingFile} onChange={e=>{const f=e.target.files[0];if(f)uploadToDrive(f,selectedTask.id);e.target.value="";}}/>
+                    </label>
+                  ):(
+                    <button onClick={connectDrive} style={{...S.btn(null),fontSize:11,padding:"7px 12px",border:"1px dashed "+c.border}}>🔗 Conectar Drive para adjuntar</button>
                   )}
                 </div>
               </div>
@@ -806,53 +848,16 @@ export default function WorkOS() {
               </div>
             </>)}
 
-            {/* EDIT MODE */}
             {editMode&&editTask&&(<>
-              <div style={{marginBottom:10}}>
-                <label style={S.label}>Título *</label>
-                <input style={S.input} value={editTask.title} onChange={e=>setEditTask(t=>({...t,title:e.target.value}))} placeholder="Título de la tarea"/>
-              </div>
-              <div style={{marginBottom:10}}>
-                <label style={S.label}>Descripción</label>
-                <textarea style={{...S.input,resize:"vertical",minHeight:70}} value={editTask.description||""} onChange={e=>setEditTask(t=>({...t,description:e.target.value}))} placeholder="Descripción detallada..."/>
-              </div>
+              <div style={{marginBottom:10}}><label style={S.label}>Título *</label><input style={S.input} value={editTask.title} onChange={e=>setEditTask(t=>({...t,title:e.target.value}))} placeholder="Título de la tarea"/></div>
+              <div style={{marginBottom:10}}><label style={S.label}>Descripción</label><textarea style={{...S.input,resize:"vertical",minHeight:70}} value={editTask.description||""} onChange={e=>setEditTask(t=>({...t,description:e.target.value}))} placeholder="Descripción detallada..."/></div>
               <div style={{...S.grid2,marginBottom:10}}>
-                <div>
-                  <label style={S.label}>Área</label>
-                  <select style={S.select} value={editTask.area||""} onChange={e=>setEditTask(t=>({...t,area:e.target.value}))}>
-                    <option value="">Sin área</option>
-                    {settings.areas.map(a=><option key={a}>{a}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={S.label}>Proyecto</label>
-                  <select style={S.select} value={editTask.project||""} onChange={e=>setEditTask(t=>({...t,project:e.target.value}))}>
-                    <option value="">Sin proyecto</option>
-                    {(settings.projects||DEFAULT_PROJECTS).map(p=><option key={p}>{p}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={S.label}>Prioridad</label>
-                  <select style={S.select} value={editTask.priority} onChange={e=>setEditTask(t=>({...t,priority:e.target.value}))}>
-                    {settings.priorities.map(p=><option key={p}>{p}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={S.label}>Estado</label>
-                  <select style={S.select} value={editTask.state} onChange={e=>setEditTask(t=>({...t,state:e.target.value}))}>
-                    {settings.states.map(s=><option key={s}>{s}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={S.label}>Asignado a</label>
-                  <select style={S.select} value={editTask.assignee||"Yo"} onChange={e=>setEditTask(t=>({...t,assignee:e.target.value}))}>
-                    {settings.team.map(m=><option key={m}>{m}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={S.label}>Fecha límite</label>
-                  <input type="date" style={S.input} value={editTask.deadline||""} onChange={e=>setEditTask(t=>({...t,deadline:e.target.value}))}/>
-                </div>
+                <div><label style={S.label}>Área</label><select style={S.select} value={editTask.area||""} onChange={e=>setEditTask(t=>({...t,area:e.target.value}))}><option value="">Sin área</option>{settings.areas.map(a=><option key={a}>{a}</option>)}</select></div>
+                <div><label style={S.label}>Proyecto</label><select style={S.select} value={editTask.project||""} onChange={e=>setEditTask(t=>({...t,project:e.target.value}))}><option value="">Sin proyecto</option>{(settings.projects||DEFAULT_PROJECTS).map(p=><option key={p}>{p}</option>)}</select></div>
+                <div><label style={S.label}>Prioridad</label><select style={S.select} value={editTask.priority} onChange={e=>setEditTask(t=>({...t,priority:e.target.value}))}>{settings.priorities.map(p=><option key={p}>{p}</option>)}</select></div>
+                <div><label style={S.label}>Estado</label><select style={S.select} value={editTask.state} onChange={e=>setEditTask(t=>({...t,state:e.target.value}))}>{settings.states.map(s=><option key={s}>{s}</option>)}</select></div>
+                <div><label style={S.label}>Asignado a</label><select style={S.select} value={editTask.assignee||"Yo"} onChange={e=>setEditTask(t=>({...t,assignee:e.target.value}))}>{settings.team.map(m=><option key={m}>{m}</option>)}</select></div>
+                <div><label style={S.label}>Fecha límite</label><input type="date" style={S.input} value={editTask.deadline||""} onChange={e=>setEditTask(t=>({...t,deadline:e.target.value}))}/></div>
               </div>
               <div style={{display:"flex",gap:8,marginTop:16,paddingTop:12,borderTop:"1px solid "+c.border}}>
                 <button style={S.btn("primary")} onClick={saveEdit}>💾 Guardar cambios</button>
@@ -861,39 +866,23 @@ export default function WorkOS() {
                 <button style={S.btn("danger")} onClick={()=>deleteTask(selectedTask.id)}>🗑</button>
               </div>
             </>)}
-
           </div>
         </div>
       )}
 
-      {/* ── VOICE HELP PANEL ── */}
+      {/* ── VOICE HELP ── */}
       {showVoiceHelp&&(
         <div style={{position:"fixed",bottom:148,right:16,background:c.surface,border:"1px solid "+c.border,borderRadius:14,padding:16,width:290,zIndex:45,boxShadow:"0 8px 24px rgba(0,0,0,0.2)"}}>
           <div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}>
             <span style={{fontWeight:800,fontSize:13}}>🎙 Comandos de voz</span>
             <button onClick={()=>setShowVoiceHelp(false)} style={{background:"none",border:"none",cursor:"pointer",fontSize:16,color:c.text2}}>✕</button>
           </div>
-          {[
-            ["Nueva tarea","«nueva tarea llamar al arquitecto Aguamarina urgente»"],
-            ["Completar","«completar tarea 1»"],
-            ["Iniciar","«iniciar tarea 2»"],
-            ["Bloquear","«bloquear tarea 3»"],
-            ["Agregar nota","«nota tarea 1 se firmó el contrato hoy»"],
-            ["Filtrar proyecto","«mostrar tareas de Turquesa»"],
-            ["Navegar","«ir a agenda» / «ir a tareas»"],
-            ["Limpiar filtros","«limpiar filtros»"],
-          ].map(([label,example])=>(
+          {[["Nueva tarea","«nueva tarea llamar al arquitecto Aguamarina urgente»"],["Anotar rápido","«anotar revisar presupuesto mañana»"],["Completar","«completar tarea 1»"],["Iniciar","«iniciar tarea 2»"],["Nota","«nota tarea 1 se firmó el contrato»"],["Filtrar","«mostrar tareas de Turquesa»"],["Navegar","«ir a notas» / «ir a agenda»"]].map(([label,example])=>(
             <div key={label} style={{marginBottom:9}}>
               <div style={{fontSize:10,fontWeight:700,color:c.accent,textTransform:"uppercase",letterSpacing:0.5}}>{label}</div>
               <div style={{fontSize:11,color:c.text2,fontStyle:"italic",marginTop:1}}>{example}</div>
             </div>
           ))}
-          {lastVoiceResult&&(
-            <div style={{marginTop:10,paddingTop:10,borderTop:"1px solid "+c.border}}>
-              <div style={{fontSize:10,fontWeight:700,color:c.text2}}>ÚLTIMO COMANDO:</div>
-              <div style={{fontSize:12,color:c.text,marginTop:2,fontStyle:"italic"}}>"{lastVoiceResult}"</div>
-            </div>
-          )}
         </div>
       )}
 
@@ -902,17 +891,18 @@ export default function WorkOS() {
         <button onClick={()=>setShowVoiceHelp(v=>!v)} style={{background:c.surface,border:"1px solid "+c.border,borderRadius:20,padding:"4px 12px",fontSize:11,cursor:"pointer",color:c.text2,fontFamily:"inherit",boxShadow:"0 2px 8px rgba(0,0,0,0.15)"}}>
           {showVoiceHelp?"✕ cerrar":"? ayuda"}
         </button>
-        <button onClick={startVoice} style={{width:56,height:56,borderRadius:"50%",background:listening?"#dc2626":c.accent,border:"none",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 4px 16px rgba(0,0,0,0.3)",transition:"all 0.2s"}}>
+        <button onClick={startVoice} style={{width:56,height:56,borderRadius:"50%",background:listening?"#dc2626":c.accent,border:"none",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 4px 16px rgba(0,0,0,0.3)",transition:"all 0.2s",position:"relative"}}>
           <span style={{fontSize:22}}>{listening?"⏹":"🎙"}</span>
         </button>
       </div>
 
       {/* ── BOTTOM NAV ── */}
       <div style={S.bottomNav}>
-        {[["dashboard","📊","Inicio"],["tasks","✅","Tareas"],["agenda","📅","Agenda"],["settings","⚙️","Ajustes"]].map(([v,icon,label])=>(
+        {[["dashboard","📊","Inicio"],["tasks","✅","Tareas"],["notes","📝","Notas"],["agenda","📅","Agenda"],["settings","⚙️","Ajustes"]].map(([v,icon,label])=>(
           <button key={v} style={S.bottomBtn(view===v)} onClick={()=>setView(v)}>
             <span style={{fontSize:18}}>{icon}</span>
             <span>{label}</span>
+            {v==="notes"&&pendingNotesCount>0&&<span style={{background:"#dc2626",color:"#fff",borderRadius:10,padding:"1px 5px",fontSize:8,position:"absolute",marginTop:-24,marginLeft:10}}>{pendingNotesCount}</span>}
           </button>
         ))}
       </div>
@@ -920,7 +910,7 @@ export default function WorkOS() {
       {/* ── VOICE INDICATOR ── */}
       {listening&&(
         <div style={{position:"fixed",top:64,left:0,right:0,background:"#dc2626",color:"#fff",padding:"10px 16px",textAlign:"center",fontSize:13,fontWeight:700,zIndex:60}}>
-          🎙 Escuchando... {voiceTranscript&&"\""+voiceTranscript+"\""}
+          🎙 Escuchando... {voiceTranscript&&'"'+voiceTranscript+'"'}
         </div>
       )}
 
