@@ -29,8 +29,10 @@ export async function GET(request) {
     });
     const tokens = await response.json();
     await saveToken('gcal', tokens.access_token, tokens.refresh_token);
+    await saveToken('drive', tokens.access_token, tokens.refresh_token);
     const redirectUrl = new URL('/', request.url);
     redirectUrl.searchParams.set('access_token', tokens.access_token);
+    redirectUrl.searchParams.set('drive_token', tokens.access_token);
     if (tokens.refresh_token) redirectUrl.searchParams.set('refresh_token', tokens.refresh_token);
     return NextResponse.redirect(redirectUrl);
   } catch {
