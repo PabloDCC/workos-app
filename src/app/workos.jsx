@@ -172,43 +172,28 @@ export default function WorkOS() {
     const driveTokenParam = params.get("drive_token");
 
     const autoRefresh = async () => {
-      // Try to refresh GCal token from Supabase
       try {
+        // Both gcal and drive use same token — refresh once
         const gcalRes = await fetch("/api/auth/refresh?service=gcal");
         const gcalData = await gcalRes.json();
         if (gcalData.access_token) {
           setGcalToken(gcalData.access_token);
           setGcalConnected(true);
-          localStorage.setItem("gcal_token", gcalData.access_token);
-        }
-      } catch {}
-      // Try to refresh Drive token from Supabase
-      try {
-        const driveRes = await fetch("/api/auth/refresh?service=drive");
-        const driveData = await driveRes.json();
-        if (driveData.access_token) {
-          setDriveToken(driveData.access_token);
+          setDriveToken(gcalData.access_token);
           setDriveConnected(true);
-          localStorage.setItem("drive_token", driveData.access_token);
         }
       } catch {}
     };
 
     if (token || driveTokenParam) {
-      // Both tokens come together from unified Google OAuth
-      if (token) {
-        setGcalToken(token); setGcalConnected(true);
-        localStorage.setItem("gcal_token", token);
-      }
-      if (driveTokenParam) {
-        setDriveToken(driveTokenParam); setDriveConnected(true);
-        localStorage.setItem("drive_token", driveTokenParam);
-      }
+      // Coming back from OAuth — tokens already saved in Supabase by callback
       window.history.replaceState({}, document.title, window.location.pathname);
+      // Load both from Supabase immediately
+      await autoRefresh();
       showToast("✅ Google Calendar y Drive conectados");
     } else {
-      // No new tokens — try auto refresh both from Supabase
-      autoRefresh();
+      // Normal load — get tokens from Supabase
+      await autoRefresh();
     }
 
     // Auto refresh every 45 minutes
