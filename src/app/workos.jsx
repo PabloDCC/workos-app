@@ -197,17 +197,31 @@ export default function WorkOS() {
     if (token) {
       setGcalToken(token); setGcalConnected(true);
       localStorage.setItem("gcal_token", token);
-      showToast("Google Calendar conectado ✓");
-    }
-    if (driveTokenParam) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      // After connecting gcal, also refresh drive from Supabase
+      setTimeout(async () => {
+        try {
+          const driveRes = await fetch("/api/auth/refresh?service=drive");
+          const driveData = await driveRes.json();
+          if (driveData.access_token) { setDriveToken(driveData.access_token); setDriveConnected(true); }
+        } catch {}
+        showToast("Google Calendar conectado ✓");
+      }, 500);
+    } else if (driveTokenParam) {
       setDriveToken(driveTokenParam); setDriveConnected(true);
       localStorage.setItem("drive_token", driveTokenParam);
-      showToast("Google Drive conectado ✓");
-    }
-    if (token || driveTokenParam) {
       window.history.replaceState({}, document.title, window.location.pathname);
+      // After connecting drive, also refresh gcal from Supabase
+      setTimeout(async () => {
+        try {
+          const gcalRes = await fetch("/api/auth/refresh?service=gcal");
+          const gcalData = await gcalRes.json();
+          if (gcalData.access_token) { setGcalToken(gcalData.access_token); setGcalConnected(true); }
+        } catch {}
+        showToast("Google Drive conectado ✓");
+      }, 500);
     } else {
-      // No new tokens — try auto refresh from Supabase
+      // No new tokens — try auto refresh both from Supabase
       autoRefresh();
     }
 
