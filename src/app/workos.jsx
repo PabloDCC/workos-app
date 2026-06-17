@@ -167,13 +167,9 @@ export default function WorkOS() {
   // ── GOOGLE AUTH + AUTO REFRESH ──
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    const token = params.get("access_token");
-    const driveTokenParam = params.get("drive_token");
 
     const autoRefresh = async () => {
       try {
-        // Both gcal and drive use same token — refresh once
         const gcalRes = await fetch("/api/auth/refresh?service=gcal");
         const gcalData = await gcalRes.json();
         if (gcalData.access_token) {
@@ -185,16 +181,21 @@ export default function WorkOS() {
       } catch {}
     };
 
-    if (token || driveTokenParam) {
-      // Coming back from OAuth — tokens already saved in Supabase by callback
-      window.history.replaceState({}, document.title, window.location.pathname);
-      // Load both from Supabase immediately
-      await autoRefresh();
-      showToast("✅ Google Calendar y Drive conectados");
-    } else {
-      // Normal load — get tokens from Supabase
-      await autoRefresh();
-    }
+    const init = async () => {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get("access_token");
+      const driveTokenParam = params.get("drive_token");
+
+      if (token || driveTokenParam) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+        await autoRefresh();
+        showToast("✅ Google Calendar y Drive conectados");
+      } else {
+        await autoRefresh();
+      }
+    };
+
+    init();
 
     // Auto refresh every 45 minutes
     const interval = setInterval(autoRefresh, 45 * 60 * 1000);
