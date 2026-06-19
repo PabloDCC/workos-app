@@ -339,16 +339,52 @@ export default function WorkOS() {
 
   // ── TASKS (SUPABASE) ──
   const addTask = async (taskData) => {
-    const t = taskData || { ...newTask, id:uid(), notes:[], created:nowStr() };
+    // New tasks get the highest sort_order so they appear first
+    const maxOrder = tasks.length > 0 ? Math.max(...tasks.map(t => t.sort_order || 0)) : 0;
+    const t = taskData
+      ? { sort_order: maxOrder + 1, completed_at: "", ...taskData }
+      : { ...newTask, id:uid(), notes:[], created:nowStr(), sort_order: maxOrder + 1, completed_at: "" };
     setTasks(prev => [t, ...prev]);
     await sb.from('tasks').upsert(t);
     if (!taskData) { setNewTask({title:"",area:"",priority:"Media",state:"Pendiente",assignee:"Yo",deadline:"",description:"",project:""}); setShowTaskForm(false); showToast("Tarea creada ✓"); }
   };
 
   const updateTask = async (id, updates) => {
+    // Auto-set completed_at when state changes to "Completado"
+    const task = tasks.find(t => t.id === id);
+    if (updates.state === "Completado" && task?.state !== "Completado") {
+      updates = { ...updates, completed_at: new Date().toISOString() };
+    } else if (updates.state && updates.state !== "Completado" && task?.state === "Completado") {
+      // Moving back out of Completado — clear completed_at
+      updates = { ...updates, completed_at: "" };
+    }
     setTasks(prev => prev.map(t => t.id===id ? {...t,...updates} : t));
     setSelectedTask(prev => prev?.id===id ? {...prev,...updates} : prev);
     await sb.from('tasks').update(id, updates);
+  };
+
+  const reorderTasks = async (draggedId, targetId) => {
+    const active = tasks.filter(t => t.state !== "Completado").sort((a,b) => (b.sort_order||0) - (a.sort_order||0));
+    const draggedIdx = active.findIndex(t => t.id === draggedId);
+    const targetIdx = active.findIndex(t => t.id === targetId);
+    if (draggedIdx === -1 || targetIdx === -1) return;
+
+    const reordered = [...active];
+    const [moved] = reordered.splice(draggedIdx, 1);
+    reordered.splice(targetIdx, 0, moved);
+
+    // Reassign sort_order, highest = top
+    const n = reordered.length;
+    const updates = reordered.map((t, i) => ({ id: t.id, sort_order: n - i }));
+
+    setTasks(prev => prev.map(t => {
+      const u = updates.find(x => x.id === t.id);
+      return u ? { ...t, sort_order: u.sort_order } : t;
+    }));
+
+    for (const u of updates) {
+      await sb.from('tasks').update(u.id, { sort_order: u.sort_order });
+    }
   };
 
   const addNote = async (taskId) => {
@@ -431,6 +467,16 @@ export default function WorkOS() {
     if (filters.project && t.project!==filters.project) return false;
     if (filters.search && !t.title.toLowerCase().includes(filters.search.toLowerCase())) return false;
     return true;
+  }).sort((a, b) => {
+    const aDone = a.state === "Completado";
+    const bDone = b.state === "Completado";
+    if (aDone !== bDone) return aDone ? 1 : -1; // completed always at bottom
+    if (aDone && bDone) {
+      // Completed: most recently finished first within the completed group
+      return (b.completed_at || "").localeCompare(a.completed_at || "");
+    }
+    // Active: manual order, highest sort_order first (newest/manually-moved on top)
+    return (b.sort_order || 0) - (a.sort_order || 0);
   });
 
   const clearFilters = () => setFilters({area:"",priority:"",state:"",assignee:"",project:"",search:""});
@@ -693,24 +739,55 @@ export default function WorkOS() {
           )}
 
           {filteredTasks.length===0&&<div style={{...S.card,textAlign:"center",color:c.text2,padding:32}}>Sin tareas con estos filtros</div>}
-          {filteredTasks.map(t=>(
-            <div key={t.id} style={{...S.card,borderLeft:"3px solid "+(PRIORITY_COLORS[t.priority]||"#ccc"),cursor:"pointer"}} onClick={()=>setSelectedTask(t)}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontWeight:700,fontSize:13,marginBottom:5,textDecoration:t.state==="Completado"?"line-through":"none",color:t.state==="Completado"?c.text2:c.text}}>{t.title}</div>
-                  <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-                    {t.area&&<span style={S.areaBadge(t.area)}>{t.area}</span>}
-                    {t.project&&<span style={S.projBadge}>🏗 {t.project}</span>}
-                    <span style={S.badge(t.state)}>{t.state}</span>
-                    {t.assignee&&t.assignee!=="Sin asignar"&&<span style={{fontSize:10,color:c.text2}}>👤 {t.assignee}</span>}
-                    {t.deadline&&<span style={{fontSize:10,color:c.text2}}>📅 {fmtDate(t.deadline)}</span>}
-                    {t.notes?.length>0&&<span style={{fontSize:10,color:c.text2}}>💬 {t.notes.length}</span>}
-                  </div>
+          {activeFilters===0 && (
+            <div style={{fontSize:11,color:c.text2,marginBottom:8,display:"flex",alignItems:"center",gap:6}}>
+              <span>⠿</span> Mantené presionado y arrastrá para reordenar tareas activas
+            </div>
+          )}
+          {filteredTasks.map((t,idx)=>{
+            const isDone = t.state==="Completado";
+            const activeList = filteredTasks.filter(x=>x.state!=="Completado");
+            const activeIdx = activeList.findIndex(x=>x.id===t.id);
+            const canReorder = !isDone && activeFilters===0;
+            return (
+            <div key={t.id}
+              draggable={canReorder}
+              onDragStart={e=>{e.dataTransfer.setData("text/plain", t.id); e.currentTarget.style.opacity="0.4";}}
+              onDragEnd={e=>{e.currentTarget.style.opacity="1";}}
+              onDragOver={e=>{ if(canReorder) e.preventDefault(); }}
+              onDrop={e=>{
+                e.preventDefault();
+                const draggedId = e.dataTransfer.getData("text/plain");
+                if (draggedId && draggedId !== t.id) reorderTasks(draggedId, t.id);
+              }}
+              style={{...S.card,borderLeft:"3px solid "+(PRIORITY_COLORS[t.priority]||"#ccc"),cursor:"pointer",display:"flex",alignItems:"stretch",gap:0,padding:0}}>
+              {canReorder && (
+                <div style={{display:"flex",flexDirection:"column",justifyContent:"center",padding:"0 4px 0 12px",cursor:"grab",color:c.text2,fontSize:14,userSelect:"none"}}
+                  onClick={e=>e.stopPropagation()}>
+                  <button onClick={()=>activeIdx>0 && reorderTasks(t.id, activeList[activeIdx-1].id)} disabled={activeIdx<=0} style={{background:"none",border:"none",cursor:activeIdx<=0?"default":"pointer",color:activeIdx<=0?c.border:c.text2,fontSize:12,padding:2,lineHeight:1}}>▲</button>
+                  <span style={{fontSize:13,textAlign:"center"}}>⠿</span>
+                  <button onClick={()=>activeIdx<activeList.length-1 && reorderTasks(t.id, activeList[activeIdx+1].id)} disabled={activeIdx>=activeList.length-1} style={{background:"none",border:"none",cursor:activeIdx>=activeList.length-1?"default":"pointer",color:activeIdx>=activeList.length-1?c.border:c.text2,fontSize:12,padding:2,lineHeight:1}}>▼</button>
                 </div>
-                <span style={{color:c.text2,fontSize:16,marginLeft:8}}>›</span>
+              )}
+              <div style={{flex:1,padding:16}} onClick={()=>setSelectedTask(t)}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontWeight:700,fontSize:13,marginBottom:5,textDecoration:t.state==="Completado"?"line-through":"none",color:t.state==="Completado"?c.text2:c.text}}>{t.title}</div>
+                    <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                      {t.area&&<span style={S.areaBadge(t.area)}>{t.area}</span>}
+                      {t.project&&<span style={S.projBadge}>🏗 {t.project}</span>}
+                      <span style={S.badge(t.state)}>{t.state}</span>
+                      {t.assignee&&t.assignee!=="Sin asignar"&&<span style={{fontSize:10,color:c.text2}}>👤 {t.assignee}</span>}
+                      {t.deadline&&<span style={{fontSize:10,color:c.text2}}>📅 {fmtDate(t.deadline)}</span>}
+                      {isDone&&t.completed_at&&<span style={{fontSize:10,color:c.text2}}>✅ {fmtDate(t.completed_at.split("T")[0])}</span>}
+                      {t.notes?.length>0&&<span style={{fontSize:10,color:c.text2}}>💬 {t.notes.length}</span>}
+                    </div>
+                  </div>
+                  <span style={{color:c.text2,fontSize:16,marginLeft:8}}>›</span>
+                </div>
               </div>
             </div>
-          ))}
+          );})}
         </>)}
 
         {/* ── AGENDA ── */}
