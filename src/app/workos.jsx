@@ -119,6 +119,8 @@ export default function WorkOS() {
   const [filters, setFilters] = useState({ area:"", priority:"", state:"", assignee:"", project:"", search:"" });
   const [newTask, setNewTask] = useState({ title:"", area:"", priority:"Media", state:"Pendiente", assignee:"Yo", deadline:"", description:"", project:"" });
   const [noteInput, setNoteInput] = useState("");
+  const [editingNoteId, setEditingNoteId] = useState(null);
+  const [editingNoteText, setEditingNoteText] = useState("");
   const [editMode, setEditMode] = useState(false);
   const [editTask, setEditTask] = useState(null);
   const [gcalEvents, setGcalEvents] = useState([]);
@@ -357,6 +359,23 @@ export default function WorkOS() {
     await updateTask(taskId, {notes:updatedNotes});
     setSelectedTask(prev => prev ? {...prev, notes:updatedNotes} : prev);
     setNoteInput(""); showToast("Nota agregada ✓");
+  };
+
+  const editNoteText = async (taskId, noteId, newText) => {
+    if (!newText.trim()) return;
+    const task = tasks.find(t=>t.id===taskId);
+    const updatedNotes = (task?.notes||[]).map(n => n.id===noteId ? {...n, text:newText.trim(), edited:true} : n);
+    await updateTask(taskId, {notes:updatedNotes});
+    setSelectedTask(prev => prev ? {...prev, notes:updatedNotes} : prev);
+    showToast("Nota editada ✓");
+  };
+
+  const deleteNote = async (taskId, noteId) => {
+    const task = tasks.find(t=>t.id===taskId);
+    const updatedNotes = (task?.notes||[]).filter(n => n.id!==noteId);
+    await updateTask(taskId, {notes:updatedNotes});
+    setSelectedTask(prev => prev ? {...prev, notes:updatedNotes} : prev);
+    showToast("Nota eliminada");
   };
 
   const deleteTask = async (id) => { setTasks(prev=>prev.filter(t=>t.id!==id)); setSelectedTask(null); await sb.from('tasks').delete(id); showToast("Tarea eliminada"); };
@@ -802,13 +821,13 @@ export default function WorkOS() {
 
       {/* ── TASK DETAIL MODAL ── */}
       {selectedTask&&(
-        <div style={S.modal} onClick={()=>{setSelectedTask(null);setEditMode(false);setEditTask(null);}}>
+        <div style={S.modal} onClick={()=>{setSelectedTask(null);setEditMode(false);setEditTask(null);setEditingNoteId(null);}}>
           <div style={S.modalBox} onClick={e=>e.stopPropagation()}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
               {!editMode?<h3 style={{fontSize:15,fontWeight:800,flex:1,paddingRight:12,lineHeight:1.3}}>{selectedTask.title}</h3>:<span style={{fontSize:13,fontWeight:700,color:c.accent}}>✏️ Editando tarea</span>}
               <div style={{display:"flex",gap:6}}>
                 {!editMode&&<button onClick={()=>openEdit(selectedTask)} style={{...S.btn("gold"),padding:"6px 12px",fontSize:11}}>✏️ Editar</button>}
-                <button onClick={()=>{setSelectedTask(null);setEditMode(false);setEditTask(null);}} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:c.text2}}>✕</button>
+                <button onClick={()=>{setSelectedTask(null);setEditMode(false);setEditTask(null);setEditingNoteId(null);}} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:c.text2}}>✕</button>
               </div>
             </div>
 
@@ -840,16 +859,39 @@ export default function WorkOS() {
               </div>
               <div>
                 <label style={S.label}>Notas de avance ({selectedTask.notes?.length||0})</label>
-                <div style={{maxHeight:220,overflowY:"auto",marginBottom:10}}>
+                <div style={{maxHeight:260,overflowY:"auto",marginBottom:10}}>
                   {(!selectedTask.notes||selectedTask.notes.length===0)&&<p style={{color:c.text2,fontSize:12,marginBottom:8}}>Sin notas aún</p>}
                   {selectedTask.notes?.map((n,i)=>(
-                    <div key={i} style={{background:c.surface2,borderLeft:"3px solid "+c.accent,padding:"8px 12px",borderRadius:"0 8px 8px 0",marginBottom:8}}>
-                      <div style={{fontSize:10,color:c.text2,marginBottom:3,fontWeight:700}}>📅 {fmtDate(n.date)} · {n.author}</div>
-                      <div style={{fontSize:13,lineHeight:1.5}}>{n.text}</div>
-                      {n.attachment&&(
-                        <a href={n.attachment.url} target="_blank" rel="noreferrer" style={{display:"inline-flex",alignItems:"center",gap:5,marginTop:6,background:"#e0f2fe",color:"#0369a1",borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:700,textDecoration:"none"}}>
-                          {n.attachment.type?.includes("image")?"🖼":n.attachment.type?.includes("pdf")?"📄":"📎"} {n.attachment.name}
-                        </a>
+                    <div key={n.id||i} style={{background:c.surface2,borderLeft:"3px solid "+c.accent,padding:"8px 12px",borderRadius:"0 8px 8px 0",marginBottom:8}}>
+                      {editingNoteId===n.id ? (
+                        <div>
+                          <textarea
+                            style={{...S.input,resize:"vertical",minHeight:50,marginBottom:6}}
+                            value={editingNoteText}
+                            onChange={e=>setEditingNoteText(e.target.value)}
+                            autoFocus
+                          />
+                          <div style={{display:"flex",gap:6}}>
+                            <button onClick={()=>{editNoteText(selectedTask.id,n.id,editingNoteText);setEditingNoteId(null);}} style={{...S.btn("primary"),fontSize:10,padding:"5px 10px"}}>💾 Guardar</button>
+                            <button onClick={()=>setEditingNoteId(null)} style={{...S.btn(null),fontSize:10,padding:"5px 10px"}}>Cancelar</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+                            <div style={{fontSize:10,color:c.text2,marginBottom:3,fontWeight:700}}>📅 {fmtDate(n.date)} · {n.author}{n.edited&&<span style={{fontStyle:"italic"}}> (editada)</span>}</div>
+                            <div style={{display:"flex",gap:4,flexShrink:0}}>
+                              <button onClick={()=>{setEditingNoteId(n.id);setEditingNoteText(n.text);}} style={{background:"none",border:"none",cursor:"pointer",fontSize:13,color:c.text2,padding:2}}>✏️</button>
+                              <button onClick={()=>deleteNote(selectedTask.id,n.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13,color:"#dc2626",padding:2}}>🗑</button>
+                            </div>
+                          </div>
+                          <div style={{fontSize:13,lineHeight:1.5}}>{n.text}</div>
+                          {n.attachment&&(
+                            <a href={n.attachment.url} target="_blank" rel="noreferrer" style={{display:"inline-flex",alignItems:"center",gap:5,marginTop:6,background:"#e0f2fe",color:"#0369a1",borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:700,textDecoration:"none"}}>
+                              {n.attachment.type?.includes("image")?"🖼":n.attachment.type?.includes("pdf")?"📄":"📎"} {n.attachment.name}
+                            </a>
+                          )}
+                        </>
                       )}
                     </div>
                   ))}
@@ -861,6 +903,7 @@ export default function WorkOS() {
                 <div style={{display:"flex",gap:8,alignItems:"center"}}>
                   {driveConnected?(
                     <label style={{...S.btn("gold"),padding:"7px 12px",cursor:"pointer",fontSize:11,display:"inline-block"}}>
+
                       {uploadingFile?"⏳ Subiendo...":"📎 Adjuntar archivo"}
                       <input type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" style={{display:"none"}} disabled={uploadingFile} onChange={e=>{const f=e.target.files[0];if(f)uploadToDrive(f,selectedTask.id);e.target.value="";}}/>
                     </label>
